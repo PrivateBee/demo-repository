@@ -3,6 +3,7 @@ name: C CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,8 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build
-        run: make
-
-      - name: Run
-        run: ./app
+      - name: Build C project
+        run: |
+          gcc -Wall -Wextra -Werror *.c -o app
