@@ -1,3 +1,6 @@
-//
-// Created by alif on 21/01/2026.
-//
+#include <stdio.h>
+
+int main(void) {
+    printf("Hello CI C!\n");
+    return 0;
+}
