@@ -1,8 +1,10 @@
 name: CI (C + Python)
 
 on:
-  push:
   pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -10,24 +12,22 @@ permissions:
 
 jobs:
   c:
+    name: C (build & run)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Build C
         run: gcc -Wall -Wextra -Werror main.c -o app
-
       - name: Run C
         run: ./app
 
   python:
+    name: Python (run)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Run Python
         run: python main.py
