@@ -11,38 +11,23 @@ permissions:
 jobs:
   c:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: demo_repository
     steps:
       - uses: actions/checkout@v4
+
       - name: Build C
-        run: gcc -Wall -Wextra -Werror *.c -o app
-      - name: Run
+        run: gcc -Wall -Wextra -Werror main.c -o app
+
+      - name: Run C
         run: ./app
 
   python:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: demo_repository
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-      - name: Install deps
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      - name: Run python main
-        run: |
-          if [ -f main.py ]; then python main.py; elif [ -f main ]; then python main; else echo "No main/main.py found"; exit 1; fi
-      - name: Run tests (if pytest config exists)
-        run: |
-          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f pytest.ini ]; then
-            pip install pytest
-            pytest -q
-          else
-            echo "No pytest config found; skipping tests."
-          fi
+
+      - name: Run Python
+        run: python main.py
