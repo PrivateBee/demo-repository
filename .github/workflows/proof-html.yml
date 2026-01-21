@@ -1,11 +1,20 @@
-name: Proof HTML
+name: C CI
+
 on:
   push:
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: anishathalye/proof-html@v1.1.0
-        with:
-          directory: ./
+      - uses: actions/checkout@v4
+
+      - name: Build C project
+        run: |
+          gcc -Wall -Wextra -Werror *.c -o app
