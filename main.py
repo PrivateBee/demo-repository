@@ -1,1 +1,1 @@
-print("alif")
+print("ali")
