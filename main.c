@@ -1,6 +1,6 @@
 #include <stdio.h>
 
 int main(void) {
-    printf("ali!\n");
+    printf("alif!\n");
     return 0;
 }
