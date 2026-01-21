@@ -1,4 +1,4 @@
-name: C CI
+name: CI (C + Python)
 
 on:
   push:
@@ -9,12 +9,31 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  c:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
+      - name: Build C
+        run: gcc -Wall -Wextra -Werror *.c -o app
+      - name: Run
+        run: ./app
 
-      - name: Build C project
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install deps
         run: |
-          gcc -Wall -Wextra -Werror *.c -o app
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run tests
+        run: |
+          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f pytest.ini ]; then
+            pip install pytest
+            pytest -q
+          else
+            echo "No pytest config found; skipping tests."
+          fi
