@@ -1,4 +1,4 @@
-name: CI Quality (GNU style + Static/Dynamic) - C/C++/Python/Java
+name: CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
   # C ONLY
   # =========================
   quality-c:
-    name: C (GNU format + static + dynamic)
+    name: C (LLVM format + static + dynamic)
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -46,7 +46,10 @@ jobs:
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
 
-      - name: Check GNU style (clang-format) [C]
+      # -------------------------
+      # 1) LLVM STYLE CHECK
+      # -------------------------
+      - name: Check LLVM style (clang-format) [C]
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
@@ -57,12 +60,15 @@ jobs:
             exit 0
           fi
           for f in "${FMT_FILES[@]}"; do
-            clang-format -style=GNU "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format GNU mismatch. Fix with: clang-format -style=GNU -i $f"
+            clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
+              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
               exit 1
             }
           done
 
+      # -------------------------
+      # 2) STATIC ANALYSIS
+      # -------------------------
       - name: Static analysis (cppcheck) [C]
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
@@ -82,7 +88,6 @@ jobs:
             echo "No compile_commands.json -> skipping clang-tidy"
             exit 0
           fi
-          # clang-tidy works best on C++ but can run on C in some setups
           mapfile -t TIDY_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
           if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
             echo "No .c files -> skipping clang-tidy"
@@ -92,6 +97,9 @@ jobs:
             -checks="-*,clang-analyzer-*" \
             "${TIDY_FILES[@]}"
 
+      # -------------------------
+      # 3) BUILD (compile everything, no linking)
+      # -------------------------
       - name: Compile all C translation units (no linking)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
@@ -105,6 +113,9 @@ jobs:
             gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done
 
+      # -------------------------
+      # 4) DYNAMIC ANALYSIS (only if exactly one main)
+      # -------------------------
       - name: Link & run with sanitizers + valgrind (only if exactly one main) [C]
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
@@ -146,7 +157,7 @@ jobs:
   # C++ ONLY
   # =========================
   quality-cpp:
-    name: C++ (GNU format + static + dynamic)
+    name: C++ (LLVM format + static + dynamic)
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -179,7 +190,10 @@ jobs:
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
 
-      - name: Check GNU style (clang-format) [C++]
+      # -------------------------
+      # 1) LLVM STYLE CHECK
+      # -------------------------
+      - name: Check LLVM style (clang-format) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
         run: |
@@ -193,12 +207,15 @@ jobs:
             exit 0
           fi
           for f in "${FMT_FILES[@]}"; do
-            clang-format -style=GNU "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format GNU mismatch. Fix with: clang-format -style=GNU -i $f"
+            clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
+              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
               exit 1
             }
           done
 
+      # -------------------------
+      # 2) STATIC ANALYSIS
+      # -------------------------
       - name: Static analysis (cppcheck) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
@@ -229,6 +246,9 @@ jobs:
             -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" \
             "${TIDY_FILES[@]}"
 
+      # -------------------------
+      # 3) BUILD (compile everything, no linking)
+      # -------------------------
       - name: Compile all C++ translation units (no linking)
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
@@ -244,6 +264,9 @@ jobs:
             g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done
 
+      # -------------------------
+      # 4) DYNAMIC ANALYSIS (only if exactly one main)
+      # -------------------------
       - name: Link & run with sanitizers + valgrind (only if exactly one main) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
@@ -445,7 +468,6 @@ jobs:
             echo "No compiled classes -> skipping spotbugs"
             exit 0
           fi
-          # SpotBugs peut être bruyant sans build tool, on le met best-effort
           spotbugs -textui -effort:max -high -classpath out -auxclasspath out out || true
 
       - name: Run tests if Maven/Gradle, else run if exactly one main
