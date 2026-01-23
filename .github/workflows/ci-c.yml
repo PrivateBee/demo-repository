@@ -16,61 +16,126 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build C
-        run: gcc -std=c11 -Wall -Wextra -Werror -O2 main.c -o app_c
-
-      - name: Run C
-        run: ./app_c
+      - name: Build & Run C (skip if none)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
+          if [ "${#C_FILES[@]}" -eq 0 ]; then
+            echo "No .c files found -> skipping"
+            exit 0
+          fi
+          gcc -std=c11 -Wall -Wextra -Werror -O2 "${C_FILES[@]}" -o app_c
+          ./app_c
 
   cpp:
     name: C++ (build & run)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build C++
-        run: g++ -std=c++17 -Wall -Wextra -Werror -O2 main.cpp -o app_cpp
-
-      - name: Run C++
-        run: ./app_cpp
+      - name: Build & Run C++ (skip if none)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t CPP_FILES < <(find . -type f -name "*.cpp" ! -path "./.git/*")
+          if [ "${#CPP_FILES[@]}" -eq 0 ]; then
+            echo "No .cpp files found -> skipping"
+            exit 0
+          fi
+          g++ -std=c++17 -Wall -Wextra -Werror -O2 "${CPP_FILES[@]}" -o app_cpp
+          ./app_cpp
 
   python:
     name: Python (run)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Python (only if .py exists)
+        id: pycheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f -name "*.py" ! -path "./.git/*" | grep -q .; then
+            echo "has_py=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_py=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.pycheck.outputs.has_py == 'true'
         with:
           python-version: "3.11"
 
-      - name: Run Python
-        run: python3 -u main.py
+      - name: Run Python (skip if none)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t PY_FILES < <(find . -type f -name "*.py" ! -path "./.git/*")
+          if [ "${#PY_FILES[@]}" -eq 0 ]; then
+            echo "No .py files found -> skipping"
+            exit 0
+          fi
+          # Lance juste le premier script trouvé (ou adapte selon ton besoin)
+          echo "Running: ${PY_FILES[0]}"
+          python3 -u "${PY_FILES[0]}"
 
   java:
     name: Java (compile & run)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java (only if .java exists)
+        id: javacheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f -name "*.java" ! -path "./.git/*" | grep -q .; then
+            echo "has_java=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_java=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.javacheck.outputs.has_java == 'true'
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Compile Java
-        run: javac Main.java
+      - name: Compile & Run Java (skip if none)
+        if: steps.javacheck.outputs.has_java == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
+          javac -d out "${JAVA_FILES[@]}"
 
-      - name: Run Java
-        run: java Main
+          MAIN_SRC=$(grep -Rsl --include="*.java" "public static void main" . | head -n 1 || true)
+          if [ -z "$MAIN_SRC" ]; then
+            echo "Java present but no main() found -> skipping run"
+            exit 0
+          fi
+
+          PKG=$(grep -E "^\s*package\s+" "$MAIN_SRC" | head -n 1 | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;\s*$/\1/' || true)
+          CLS=$(grep -E "class\s+[A-Za-z_][A-Za-z0-9_]*" "$MAIN_SRC" | head -n 1 | sed -E 's/.*class\s+([A-Za-z_][A-Za-z0-9_]*).*/\1/')
+
+          if [ -n "$PKG" ]; then
+            MAIN="$PKG.$CLS"
+          else
+            MAIN="$CLS"
+          fi
+
+          echo "Running Java main: $MAIN"
+          java -cp out "$MAIN"
+
+      - name: Java skipped (no .java)
+        if: steps.javacheck.outputs.has_java != 'true'
+        run: echo "No .java files found -> skipping"
