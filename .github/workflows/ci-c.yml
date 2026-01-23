@@ -138,16 +138,16 @@ jobs:
           mkdir -p build_c
           mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
 
-          echo "Linking with clang-18 + ASan/UBSan"
+          echo "Build + run (sanitizers):"
           clang -std=c11 -Wall -Wextra -Werror -O1 -g \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${C_FILES[@]}" -o build_c/app_san
+            "${C_FILES[@]}" -o build_c/app_asan
+          ./build_c/app_asan
 
-          echo "Run (sanitizers):"
-          ./build_c/app_san
-
-          echo "Run (valgrind):"
-          valgrind --error-exitcode=1 --leak-check=full ./build_c/app_san
+          echo "Build + run (valgrind on non-sanitized binary):"
+          clang -std=c11 -Wall -Wextra -Werror -O1 -g \
+            "${C_FILES[@]}" -o build_c/app_vg
+          valgrind --error-exitcode=1 --leak-check=full ./build_c/app_vg
 
       - name: C skipped (no .c)
         if: steps.ccheck.outputs.has_c != 'true'
@@ -292,16 +292,16 @@ jobs:
             find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
           )
 
-          echo "Linking with clang++-18 + ASan/UBSan"
+          echo "Build + run (sanitizers):"
           clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${CPP_FILES[@]}" -o build_cpp/app_san
+            "${CPP_FILES[@]}" -o build_cpp/app_asan
+          ./build_cpp/app_asan
 
-          echo "Run (sanitizers):"
-          ./build_cpp/app_san
-
-          echo "Run (valgrind):"
-          valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_san
+          echo "Build + run (valgrind on non-sanitized binary):"
+          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
+            "${CPP_FILES[@]}" -o build_cpp/app_vg
+          valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_vg
 
       - name: C++ skipped (no C++ sources)
         if: steps.cppcheck.outputs.has_cpp != 'true'
