@@ -1,4 +1,4 @@
-name: CI (C + Python)
+name: CI (C + C++ + Python + Java)
 
 on:
   pull_request:
@@ -17,9 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build C
-        run: gcc -Wall -Wextra -Werror main.c -o app
+        run: gcc -Wall -Wextra -Werror main.c -o app_c
       - name: Run C
-        run: ./app
+        run: ./app_c
+
+  cpp:
+    name: C++ (build & run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build C++
+        run: g++ -Wall -Wextra -Werror main.cpp -o app_cpp
+      - name: Run C++
+        run: ./app_cpp
 
   python:
     name: Python (run)
@@ -31,3 +41,17 @@ jobs:
           python-version: "3.11"
       - name: Run Python
         run: python main.py
+
+  java:
+    name: Java (compile & run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile Java
+        run: javac Main.java
+      - name: Run Java
+        run: java Main
