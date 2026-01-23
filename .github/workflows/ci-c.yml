@@ -1,10 +1,10 @@
-name: CI (C + Python)
+name: CI (C + C++ + Python + Java)
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -14,20 +14,63 @@ jobs:
   c:
     name: C (build & run)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Build C
-        run: gcc -Wall -Wextra -Werror main.c -o app
+        run: gcc -std=c11 -Wall -Wextra -Werror -O2 main.c -o app_c
+
       - name: Run C
-        run: ./app
+        run: ./app_c
+
+  cpp:
+    name: C++ (build & run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build C++
+        run: g++ -std=c++17 -Wall -Wextra -Werror -O2 main.cpp -o app_cpp
+
+      - name: Run C++
+        run: ./app_cpp
 
   python:
     name: Python (run)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Run Python
-        run: python main.py
+        run: python3 -u main.py
+
+  java:
+    name: Java (compile & run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Compile Java
+        run: javac Main.java
+
+      - name: Run Java
+        run: java Main
