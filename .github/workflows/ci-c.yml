@@ -11,39 +11,51 @@ permissions:
   contents: read
 
 jobs:
-  quality-c-cpp:
-    name: C/C++ (GNU format + static + dynamic)
-    runs-on: ubuntu-latest
+  # =========================
+  # C ONLY
+  # =========================
+  quality-c:
+    name: C (GNU format + static + dynamic)
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install C/C++ tools
+      - name: Detect C files
+        id: ccheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f -name "*.c" ! -path "./.git/*" | grep -q .; then
+            echo "has_c=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_c=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C tools (only if C exists, pinned clang 18)
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang clang++ \
-            clang-format clang-tidy \
+            clang-18 clang-format-18 clang-tidy-18 \
             cppcheck valgrind
 
-      # -------------------------
-      # 1) GNU STYLE CHECK
-      # -------------------------
-      - name: Check GNU style (clang-format)
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+
+      - name: Check GNU style (clang-format) [C]
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t FMT_FILES < <(
-            find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.hpp" -o -name "*.cpp" \) \
-              ! -path "./.git/*"
-          )
+          mapfile -t FMT_FILES < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
           if [ "${#FMT_FILES[@]}" -eq 0 ]; then
-            echo "No C/C++ files -> skipping format check"
+            echo "No C files -> skipping format check"
             exit 0
           fi
-
           for f in "${FMT_FILES[@]}"; do
             clang-format -style=GNU "$f" | diff -u "$f" - >/dev/null || {
               echo "::error file=$f::clang-format GNU mismatch. Fix with: clang-format -style=GNU -i $f"
@@ -51,85 +63,194 @@ jobs:
             }
           done
 
-      # -------------------------
-      # 2) STATIC ANALYSIS
-      # -------------------------
-      - name: Static analysis (cppcheck)
+      - name: Static analysis (cppcheck) [C]
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t SRC_FILES < <(
-            find . -type f \( -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) \
-              ! -path "./.git/*"
-          )
-          if [ "${#SRC_FILES[@]}" -eq 0 ]; then
-            echo "No C/C++ files -> skipping cppcheck"
-            exit 0
-          fi
-
           cppcheck --enable=all --inconclusive \
             --inline-suppr --error-exitcode=1 \
             --suppress=missingIncludeSystem \
             .
 
-      - name: Static analysis (clang-tidy if compile_commands.json exists)
+      - name: Static analysis (clang-tidy if compile_commands.json exists) [C]
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -f compile_commands.json ]; then
-            echo "No compile_commands.json -> skipping clang-tidy (cppcheck already done)"
+            echo "No compile_commands.json -> skipping clang-tidy"
             exit 0
           fi
-
-          mapfile -t TIDY_FILES < <(find . -type f -name "*.cpp" ! -path "./.git/*")
+          # clang-tidy works best on C++ but can run on C in some setups
+          mapfile -t TIDY_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
           if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
-            echo "No .cpp files -> skipping clang-tidy"
+            echo "No .c files -> skipping clang-tidy"
             exit 0
           fi
-
           clang-tidy -p . \
-            -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" \
+            -checks="-*,clang-analyzer-*" \
             "${TIDY_FILES[@]}"
 
-      # -------------------------
-      # 3) BUILD (compile everything, no linking)
-      # -------------------------
-      - name: Compile all C/C++ translation units (no linking)
+      - name: Compile all C translation units (no linking)
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/obj
-
+          mkdir -p build_c/obj
           mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          mapfile -t CPP_FILES < <(find . -type f -name "*.cpp" ! -path "./.git/*")
-
-          if [ "${#C_FILES[@]}" -eq 0 ] && [ "${#CPP_FILES[@]}" -eq 0 ]; then
-            echo "No C/C++ sources -> skipping"
-            exit 0
-          fi
-
           for f in "${C_FILES[@]}"; do
-            out="build/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
+            out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CC  $f"
             gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done
 
+      - name: Link & run with sanitizers + valgrind (only if exactly one main) [C]
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t MAIN_FILES < <(
+            grep -Rsn --include="*.c" -E '^\s*int\s+main\s*\(' . | cut -d: -f1 | sort -u
+          )
+
+          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
+            echo "No main() found -> skipping dynamic analysis"
+            exit 0
+          fi
+          if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
+            echo "Multiple main() found -> skipping link/run"
+            printf '%s\n' "${MAIN_FILES[@]}"
+            exit 0
+          fi
+
+          mkdir -p build_c
+          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
+
+          echo "Linking with clang-18 + ASan/UBSan"
+          clang -std=c11 -Wall -Wextra -Werror -O1 -g \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            "${C_FILES[@]}" -o build_c/app_san
+
+          echo "Run (sanitizers):"
+          ./build_c/app_san
+
+          echo "Run (valgrind):"
+          valgrind --error-exitcode=1 --leak-check=full ./build_c/app_san
+
+      - name: C skipped (no .c)
+        if: steps.ccheck.outputs.has_c != 'true'
+        run: echo "No .c files found -> skipping C job"
+
+  # =========================
+  # C++ ONLY
+  # =========================
+  quality-cpp:
+    name: C++ (GNU format + static + dynamic)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C++ files
+        id: cppcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*" | grep -q .; then
+            echo "has_cpp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cpp=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C++ tools (only if C++ exists, pinned clang 18)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 clang++-18 \
+            clang-format-18 clang-tidy-18 \
+            cppcheck valgrind
+
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+
+      - name: Check GNU style (clang-format) [C++]
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t FMT_FILES < <(
+            find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" -o -name "*.h" \) \
+              ! -path "./.git/*"
+          )
+          if [ "${#FMT_FILES[@]}" -eq 0 ]; then
+            echo "No C++ files -> skipping format check"
+            exit 0
+          fi
+          for f in "${FMT_FILES[@]}"; do
+            clang-format -style=GNU "$f" | diff -u "$f" - >/dev/null || {
+              echo "::error file=$f::clang-format GNU mismatch. Fix with: clang-format -style=GNU -i $f"
+              exit 1
+            }
+          done
+
+      - name: Static analysis (cppcheck) [C++]
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cppcheck --enable=all --inconclusive \
+            --inline-suppr --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            .
+
+      - name: Static analysis (clang-tidy if compile_commands.json exists) [C++]
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f compile_commands.json ]; then
+            echo "No compile_commands.json -> skipping clang-tidy"
+            exit 0
+          fi
+          mapfile -t TIDY_FILES < <(
+            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
+          )
+          if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
+            echo "No C++ sources -> skipping clang-tidy"
+            exit 0
+          fi
+          clang-tidy -p . \
+            -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" \
+            "${TIDY_FILES[@]}"
+
+      - name: Compile all C++ translation units (no linking)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build_cpp/obj
+          mapfile -t CPP_FILES < <(
+            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
+          )
           for f in "${CPP_FILES[@]}"; do
-            out="build/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
+            out="build_cpp/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CXX $f"
             g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done
 
-      # -------------------------
-      # 4) DYNAMIC ANALYSIS (only if exactly one main)
-      # -------------------------
-      - name: Link & run with sanitizers + valgrind (only if exactly one main)
+      - name: Link & run with sanitizers + valgrind (only if exactly one main) [C++]
+        if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
         run: |
           set -euo pipefail
-
           mapfile -t MAIN_FILES < <(
-            grep -Rsn --include="*.c" --include="*.cpp" -E '^\s*(int|auto)\s+main\s*\(' . \
+            grep -Rsn --include="*.cpp" --include="*.cc" --include="*.cxx" -E '^\s*(int|auto)\s+main\s*\(' . \
               | cut -d: -f1 | sort -u
           )
 
@@ -137,38 +258,38 @@ jobs:
             echo "No main() found -> skipping dynamic analysis"
             exit 0
           fi
-
           if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
-            echo "Found multiple main() files -> skipping link/run"
+            echo "Multiple main() found -> skipping link/run"
             printf '%s\n' "${MAIN_FILES[@]}"
             exit 0
           fi
 
-          mkdir -p build
-          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          mapfile -t CPP_FILES < <(find . -type f -name "*.cpp" ! -path "./.git/*")
+          mkdir -p build_cpp
+          mapfile -t CPP_FILES < <(
+            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
+          )
 
-          if [ "${#CPP_FILES[@]}" -gt 0 ]; then
-            echo "Linking with clang++ + ASan/UBSan"
-            clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-              -fsanitize=address,undefined -fno-omit-frame-pointer \
-              "${CPP_FILES[@]}" "${C_FILES[@]}" -o build/app_san
-          else
-            echo "Linking with clang + ASan/UBSan"
-            clang -std=c11 -Wall -Wextra -Werror -O1 -g \
-              -fsanitize=address,undefined -fno-omit-frame-pointer \
-              "${C_FILES[@]}" -o build/app_san
-          fi
+          echo "Linking with clang++-18 + ASan/UBSan"
+          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            "${CPP_FILES[@]}" -o build_cpp/app_san
 
           echo "Run (sanitizers):"
-          ./build/app_san
+          ./build_cpp/app_san
 
           echo "Run (valgrind):"
-          valgrind --error-exitcode=1 --leak-check=full ./build/app_san
+          valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_san
 
+      - name: C++ skipped (no C++ sources)
+        if: steps.cppcheck.outputs.has_cpp != 'true'
+        run: echo "No C++ files found -> skipping C++ job"
+
+  # =========================
+  # PYTHON
+  # =========================
   quality-python:
     name: Python (format + static + compile + tests/run)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -189,7 +310,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python quality tools (ruff, mypy, pytest)
+      - name: Install Python quality tools (only if Python exists)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
@@ -197,7 +318,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff mypy pytest
 
-      # --- Format/style: use ruff format (fast) ---
       - name: Python format check (ruff format)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
@@ -205,7 +325,6 @@ jobs:
           set -euo pipefail
           ruff format --check .
 
-      # --- Static: lint ---
       - name: Python lint (ruff)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
@@ -213,17 +332,13 @@ jobs:
           set -euo pipefail
           ruff check .
 
-      # --- Static: typing (best-effort) ---
       - name: Python type-check (mypy, best-effort)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Sur un repo sans annotations, mypy peut être bruyant.
-          # Tu peux le durcir plus tard avec une config mypy.ini
           mypy . || true
 
-      # --- "Compile" all python to bytecode (syntax) ---
       - name: Python syntax check (compileall)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
@@ -231,7 +346,6 @@ jobs:
           set -euo pipefail
           python -m compileall -q .
 
-      # --- Dynamic: tests if present, else run 1 entrypoint if unique ---
       - name: Python tests (pytest if present, else run single script if unique)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
@@ -242,7 +356,6 @@ jobs:
             exit 0
           fi
 
-          # Run only if exactly one python file (simple repos)
           mapfile -t PY_FILES < <(find . -type f -name "*.py" ! -path "./.git/*" | sort)
           if [ "${#PY_FILES[@]}" -eq 1 ]; then
             echo "No tests found. Running single script: ${PY_FILES[0]}"
@@ -255,9 +368,12 @@ jobs:
         if: steps.pycheck.outputs.has_py != 'true'
         run: echo "No .py files found -> skipping"
 
+  # =========================
+  # JAVA
+  # =========================
   quality-java:
-    name: Java (format-like + static + compile + tests/run)
-    runs-on: ubuntu-latest
+    name: Java (style + static + compile + tests/run)
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -279,7 +395,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Java static tools (checkstyle, spotbugs)
+      - name: Install Java static tools (only if Java exists)
         if: steps.javacheck.outputs.has_java == 'true'
         shell: bash
         run: |
@@ -287,13 +403,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends checkstyle spotbugs
 
-      # NOTE: checkstyle needs a config. If you don't have one, we generate a basic one on the fly.
       - name: Java style check (Checkstyle - basic)
         if: steps.javacheck.outputs.has_java == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Minimal checkstyle config (tu peux le remplacer par ton checkstyle.xml)
           cat > checkstyle.xml <<'XML'
           <!DOCTYPE module PUBLIC
             "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
@@ -322,8 +436,7 @@ jobs:
           mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
           javac -d out "${JAVA_FILES[@]}"
 
-      # SpotBugs without a build tool is limited; we run it on compiled classes.
-      - name: Static analysis (SpotBugs)
+      - name: Static analysis (SpotBugs) (best-effort)
         if: steps.javacheck.outputs.has_java == 'true'
         shell: bash
         run: |
@@ -332,16 +445,15 @@ jobs:
             echo "No compiled classes -> skipping spotbugs"
             exit 0
           fi
-          # -exitcode makes CI fail on bugs
-          spotbugs -textui -effort:max -high -exitcode -classpath out -auxclasspath out out || true
+          # SpotBugs peut être bruyant sans build tool, on le met best-effort
+          spotbugs -textui -effort:max -high -classpath out -auxclasspath out out || true
 
-      - name: Run tests if present (JUnit) else run if exactly one main
+      - name: Run tests if Maven/Gradle, else run if exactly one main
         if: steps.javacheck.outputs.has_java == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          # If repo uses Maven/Gradle, better to use them:
           if [ -f "pom.xml" ]; then
             echo "pom.xml found -> running mvn test"
             sudo apt-get update && sudo apt-get install -y maven
@@ -355,7 +467,6 @@ jobs:
             exit 0
           fi
 
-          # No build tool: run only if exactly one main
           mapfile -t MAIN_SRCS < <(grep -Rsl --include="*.java" "public static void main" . | sort)
           if [ "${#MAIN_SRCS[@]}" -eq 0 ]; then
             echo "No main() found -> skipping run"
