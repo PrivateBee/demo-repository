@@ -2,6 +2,6 @@
 
 int main(void) 
 {
-  printf("alifttt75!\n");
+  printf("alif75!\n");
   return 0;
 }
