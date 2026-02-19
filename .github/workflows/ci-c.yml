@@ -67,8 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang clang-format clang-tidy cppcheck
+          sudo apt-get install -y --no-install-recommends clang clang-format clang-tidy cppcheck
 
       - name: Install C tools (macOS)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'macOS'
@@ -95,17 +94,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t FMT_FILES < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
-          if [ "${#FMT_FILES[@]}" -eq 0 ]; then
-            echo "No C files -> skipping format check"
-            exit 0
-          fi
-          for f in "${FMT_FILES[@]}"; do
+          found=0
+          while IFS= read -r f; do
+            found=1
             clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
               echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
               exit 1
             }
-          done
+          done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
+          if [ "$found" -eq 0 ]; then
+            echo "No C files -> skipping format check"
+          fi
 
       - name: Check LLVM style (clang-format) [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
@@ -114,7 +113,6 @@ jobs:
           $ErrorActionPreference = "Stop"
           $files = Get-ChildItem -Recurse -File -Include *.c,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
           if ($files.Count -eq 0) { Write-Host "No C files -> skipping"; exit 0 }
-
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = Get-Content -Raw -LiteralPath $f.FullName
@@ -146,12 +144,14 @@ jobs:
             echo "No compile_commands.json -> skipping clang-tidy"
             exit 0
           fi
-          mapfile -t TIDY_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
+          found=0
+          while IFS= read -r f; do
+            found=1
+            clang-tidy -p . -checks="-*,clang-analyzer-*" "$f"
+          done < <(find . -type f -name "*.c" ! -path "./.git/*")
+          if [ "$found" -eq 0 ]; then
             echo "No .c files -> skipping clang-tidy"
-            exit 0
           fi
-          clang-tidy -p . -checks="-*,clang-analyzer-*" "${TIDY_FILES[@]}"
 
       # -------------------------
       # 3) BUILD (compile everything, no linking)
@@ -162,8 +162,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build_c/obj
-          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          for f in "${C_FILES[@]}"; do
+          found=0
+          while IFS= read -r f; do
+            found=1
             out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CC  $f"
             if command -v clang >/dev/null 2>&1; then
@@ -171,7 +172,10 @@ jobs:
             else
               gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
             fi
-          done
+          done < <(find . -type f -name "*.c" ! -path "./.git/*")
+          if [ "$found" -eq 0 ]; then
+            echo "No .c files -> skipping compile"
+          fi
 
       - name: Compile all C translation units (no linking) (Windows)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
@@ -180,10 +184,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path build_c/obj | Out-Null
           $files = Get-ChildItem -Recurse -File -Filter *.c | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          if ($files.Count -eq 0) { Write-Host "No .c files -> skipping compile"; exit 0 }
           foreach ($f in $files) {
-            $out = "build_c/obj/" + ($f.FullName -replace '^.*?\\', '' -replace '[\\/]', '_') + ".obj"
+            $safe = ($f.FullName -replace '^[A-Za-z]:\\', '' -replace '[\\/]', '_')
+            $out = "build_c/obj/$safe.obj"
             Write-Host "CC  $($f.FullName)"
-            # Use clang if present, fallback to gcc not available on Windows runner by default
             & clang -std=c11 -Wall -Wextra -Werror -O2 -c $f.FullName -o $out
           }
 
@@ -226,32 +231,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t MAIN_FILES < <(
-            grep -Rsn --include="*.c" -E '^\s*int\s+main\s*\(' . | cut -d: -f1 | sort -u
-          )
-
-          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
+          MAIN_FILES="$(grep -Rsn --include="*.c" -E '^\s*int\s+main\s*\(' . | cut -d: -f1 | sort -u || true)"
+          if [ -z "$MAIN_FILES" ]; then
             echo "No main() found -> skipping dynamic analysis"
             exit 0
           fi
-          if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
+          if [ "$(echo "$MAIN_FILES" | wc -l | tr -d ' ')" -ne 1 ]; then
             echo "Multiple main() found -> skipping link/run"
-            printf '%s\n' "${MAIN_FILES[@]}"
+            echo "$MAIN_FILES"
             exit 0
           fi
 
           mkdir -p build_c
-          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
+          C_FILES="$(find . -type f -name "*.c" ! -path "./.git/*")"
 
           echo "Build + run (sanitizers):"
           clang -std=c11 -Wall -Wextra -Werror -O1 -g \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${C_FILES[@]}" -o build_c/app_asan
+            $C_FILES -o build_c/app_asan
           ./build_c/app_asan
 
           echo "Build + run (valgrind on non-sanitized binary):"
           clang -std=c11 -Wall -Wextra -Werror -O1 -g \
-            "${C_FILES[@]}" -o build_c/app_vg
+            $C_FILES -o build_c/app_vg
           valgrind --error-exitcode=1 --leak-check=full ./build_c/app_vg
 
       - name: C dynamic skipped (no .c)
@@ -292,8 +294,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang clang++ clang-format clang-tidy cppcheck
+          sudo apt-get install -y --no-install-recommends clang clang++ clang-format clang-tidy cppcheck
 
       - name: Install C++ tools (macOS)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'macOS'
@@ -320,20 +321,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t FMT_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" -o -name "*.h" \) \
-              ! -path "./.git/*"
-          )
-          if [ "${#FMT_FILES[@]}" -eq 0 ]; then
-            echo "No C++ files -> skipping format check"
-            exit 0
-          fi
-          for f in "${FMT_FILES[@]}"; do
+          found=0
+          while IFS= read -r f; do
+            found=1
             clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
               echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
               exit 1
             }
-          done
+          done < <(
+            find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" -o -name "*.h" \) ! -path "./.git/*"
+          )
+          if [ "$found" -eq 0 ]; then
+            echo "No C++ files -> skipping format check"
+          fi
 
       - name: Check LLVM style (clang-format) [C++] (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
@@ -342,7 +342,6 @@ jobs:
           $ErrorActionPreference = "Stop"
           $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
           if ($files.Count -eq 0) { Write-Host "No C++ files -> skipping"; exit 0 }
-
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = Get-Content -Raw -LiteralPath $f.FullName
@@ -374,16 +373,14 @@ jobs:
             echo "No compile_commands.json -> skipping clang-tidy"
             exit 0
           fi
-          mapfile -t TIDY_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
-          if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
+          found=0
+          while IFS= read -r f; do
+            found=1
+            clang-tidy -p . -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" "$f"
+          done < <(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")
+          if [ "$found" -eq 0 ]; then
             echo "No C++ sources -> skipping clang-tidy"
-            exit 0
           fi
-          clang-tidy -p . \
-            -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" \
-            "${TIDY_FILES[@]}"
 
       # -------------------------
       # 3) BUILD (compile everything, no linking)
@@ -394,10 +391,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build_cpp/obj
-          mapfile -t CPP_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
-          for f in "${CPP_FILES[@]}"; do
+          found=0
+          while IFS= read -r f; do
+            found=1
             out="build_cpp/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CXX $f"
             if command -v clang++ >/dev/null 2>&1; then
@@ -405,7 +401,10 @@ jobs:
             else
               g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
             fi
-          done
+          done < <(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")
+          if [ "$found" -eq 0 ]; then
+            echo "No C++ sources -> skipping compile"
+          fi
 
       - name: Compile all C++ translation units (no linking) (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
@@ -414,8 +413,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path build_cpp/obj | Out-Null
           $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          if ($files.Count -eq 0) { Write-Host "No C++ sources -> skipping compile"; exit 0 }
           foreach ($f in $files) {
-            $out = "build_cpp/obj/" + ($f.FullName -replace '^.*?\\', '' -replace '[\\/]', '_') + ".obj"
+            $safe = ($f.FullName -replace '^[A-Za-z]:\\', '' -replace '[\\/]', '_')
+            $out = "build_cpp/obj/$safe.obj"
             Write-Host "CXX $($f.FullName)"
             & clang++ -std=c++17 -Wall -Wextra -Werror -O2 -c $f.FullName -o $out
           }
@@ -459,35 +460,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t MAIN_FILES < <(
-            grep -Rsn --include="*.cpp" --include="*.cc" --include="*.cxx" -E '^\s*(int|auto)\s+main\s*\(' . \
-              | cut -d: -f1 | sort -u
-          )
-
-          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
+          MAIN_FILES="$(grep -Rsn --include="*.cpp" --include="*.cc" --include="*.cxx" -E '^\s*(int|auto)\s+main\s*\(' . | cut -d: -f1 | sort -u || true)"
+          if [ -z "$MAIN_FILES" ]; then
             echo "No main() found -> skipping dynamic analysis"
             exit 0
           fi
-          if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
+          if [ "$(echo "$MAIN_FILES" | wc -l | tr -d ' ')" -ne 1 ]; then
             echo "Multiple main() found -> skipping link/run"
-            printf '%s\n' "${MAIN_FILES[@]}"
+            echo "$MAIN_FILES"
             exit 0
           fi
 
           mkdir -p build_cpp
-          mapfile -t CPP_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
+          CPP_FILES="$(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")"
 
           echo "Build + run (sanitizers):"
           clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${CPP_FILES[@]}" -o build_cpp/app_asan
+            $CPP_FILES -o build_cpp/app_asan
           ./build_cpp/app_asan
 
           echo "Build + run (valgrind on non-sanitized binary):"
           clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-            "${CPP_FILES[@]}" -o build_cpp/app_vg
+            $CPP_FILES -o build_cpp/app_vg
           valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_vg
 
       - name: C++ dynamic skipped (no C++ sources)
@@ -532,28 +527,28 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install ruff mypy pytest
+          python -m pip install ruff mypy pytest
 
       - name: Python format check (ruff format)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          ruff format --check .
+          python -m ruff format --check .
 
       - name: Python lint (ruff)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          ruff check .
+          python -m ruff check .
 
       - name: Python type-check (mypy, best-effort)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          mypy . || true
+          python -m mypy . || true
 
       - name: Python syntax check (compileall)
         if: steps.pycheck.outputs.has_py == 'true'
@@ -568,14 +563,20 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d "tests" ] || find . -maxdepth 3 -type f -name "test_*.py" | grep -q .; then
-            pytest -q
+            python -m pytest -q
             exit 0
           fi
 
-          mapfile -t PY_FILES < <(find . -type f -name "*.py" ! -path "./.git/*" | sort)
-          if [ "${#PY_FILES[@]}" -eq 1 ]; then
-            echo "No tests found. Running single script: ${PY_FILES[0]}"
-            python -u "${PY_FILES[0]}"
+          count=0
+          last=""
+          while IFS= read -r f; do
+            count=$((count+1))
+            last="$f"
+          done < <(find . -type f -name "*.py" ! -path "./.git/*" | sort)
+
+          if [ "$count" -eq 1 ]; then
+            echo "No tests found. Running single script: $last"
+            python -u "$last"
           else
             echo "No tests and multiple .py files -> skipping run"
           fi
@@ -660,8 +661,20 @@ jobs:
           </module>
           XML
 
-          mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
-          checkstyle -c checkstyle.xml "${JAVA_FILES[@]}"
+          found=0
+          files=""
+          while IFS= read -r f; do
+            found=1
+            files="$files \"$f\""
+          done < <(find . -type f -name "*.java" ! -path "./.git/*")
+
+          if [ "$found" -eq 0 ]; then
+            echo "No .java files -> skipping checkstyle"
+            exit 0
+          fi
+
+          # shellcheck disable=SC2086
+          eval checkstyle -c checkstyle.xml $files
 
       - name: Compile all Java files
         if: steps.javacheck.outputs.has_java == 'true'
@@ -669,8 +682,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
-          javac -d out "${JAVA_FILES[@]}"
+          found=0
+          files=""
+          while IFS= read -r f; do
+            found=1
+            files="$files \"$f\""
+          done < <(find . -type f -name "*.java" ! -path "./.git/*")
+
+          if [ "$found" -eq 0 ]; then
+            echo "No .java files -> skipping javac"
+            exit 0
+          fi
+
+          # shellcheck disable=SC2086
+          eval javac -d out $files
 
       - name: Static analysis (SpotBugs) (best-effort)
         if: steps.javacheck.outputs.has_java == 'true'
@@ -715,20 +740,21 @@ jobs:
             exit 0
           fi
 
-          mapfile -t MAIN_SRCS < <(grep -Rsl --include="*.java" "public static void main" . | sort)
-          if [ "${#MAIN_SRCS[@]}" -eq 0 ]; then
+          # best-effort: run if exactly one main
+          MAIN_SRCS="$(grep -Rsl --include="*.java" "public static void main" . | sort || true)"
+          if [ -z "$MAIN_SRCS" ]; then
             echo "No main() found -> skipping run"
             exit 0
           fi
-          if [ "${#MAIN_SRCS[@]}" -ne 1 ]; then
+          if [ "$(echo "$MAIN_SRCS" | wc -l | tr -d ' ')" -ne 1 ]; then
             echo "Multiple main() found -> skipping run"
-            printf '%s\n' "${MAIN_SRCS[@]}"
+            echo "$MAIN_SRCS"
             exit 0
           fi
 
-          MAIN_SRC="${MAIN_SRCS[0]}"
-          PKG=$(grep -E "^\s*package\s+" "$MAIN_SRC" | head -n 1 | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;\s*$/\1/' || true)
-          CLS=$(grep -E "class\s+[A-Za-z_][A-Za-z0-9_]*" "$MAIN_SRC" | head -n 1 | sed -E 's/.*class\s+([A-Za-z_][A-Za-z0-9_]*).*/\1/')
+          MAIN_SRC="$(echo "$MAIN_SRCS" | head -n 1)"
+          PKG="$(grep -E "^\s*package\s+" "$MAIN_SRC" | head -n 1 | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;\s*$/\1/' || true)"
+          CLS="$(grep -E "class\s+[A-Za-z_][A-Za-z0-9_]*" "$MAIN_SRC" | head -n 1 | sed -E 's/.*class\s+([A-Za-z_][A-Za-z0-9_]*).*/\1/')"
 
           if [ -z "$CLS" ]; then
             echo "Could not detect class name -> skipping run"
