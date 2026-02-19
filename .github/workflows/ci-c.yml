@@ -1,4 +1,4 @@
-name: CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java (Linux/Windows/macOS)
+name: "CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java (Linux/Windows/macOS)"
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
   # COMMON: CRLF guard (runs on Linux; detects Windows CRLF)
   # ==========================================================
   guard-crlf:
-    name: Guard (no CRLF in sources)
+    name: "Guard (no CRLF in sources)"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -38,7 +38,7 @@ jobs:
   # C (format + static + compile) on all OS
   # =========================
   quality-c:
-    name: C (LLVM format + static + compile) on ${{ matrix.os }}
+    name: "C (LLVM format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -167,7 +167,7 @@ jobs:
   # C DYNAMIC (Linux only)
   # =========================
   quality-c-dynamic:
-    name: C (dynamic: ASan/UBSan + Valgrind) on Linux
+    name: "C (dynamic: ASan/UBSan + Valgrind) on Linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -234,7 +234,7 @@ jobs:
   # C++ (format + static + compile) on all OS
   # =========================
   quality-cpp:
-    name: C++ (LLVM format + static + compile) on ${{ matrix.os }}
+    name: "C++ (LLVM format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -370,7 +370,7 @@ jobs:
   # C++ DYNAMIC (Linux only)
   # =========================
   quality-cpp-dynamic:
-    name: C++ (dynamic: ASan/UBSan + Valgrind) on Linux
+    name: "C++ (dynamic: ASan/UBSan + Valgrind) on Linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -440,7 +440,7 @@ jobs:
   # PYTHON (all OS)
   # =========================
   quality-python:
-    name: Python (format + static + compile + tests/run) on ${{ matrix.os }}
+    name: "Python (format + static + compile + tests/run) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     needs: [guard-crlf]
@@ -530,7 +530,7 @@ jobs:
   # JAVA (all OS)
   # =========================
   quality-java:
-    name: Java (style + static + compile + tests/run) on ${{ matrix.os }}
+    name: "Java (style + static + compile + tests/run) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
