@@ -163,13 +163,34 @@ jobs:
           choco install -y llvm cppcheck
 
           # LLVM
-          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvmBin) { $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
 
-          # cppcheck MSI path (confirmed in logs)
-          "C:\Program Files\Cppcheck" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Try to locate cppcheck.exe anywhere common
+          $candidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
+            "C:\ProgramData\chocolatey\bin\cppcheck.exe"
+          )
 
-          # Apply env changes to current session if available
-          if (Get-Command refreshenv -ErrorAction SilentlyContinue) { refreshenv }
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $found) {
+            # fallback: search disk (limited to common roots)
+            $found = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
+              -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
+              | Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $found) {
+            Write-Host "cppcheck.exe not found. Debug info:"
+            where.exe cppcheck 2>$null || Write-Host "where cppcheck: not found"
+            choco list --local-only | findstr /I cppcheck
+            throw "cppcheck installation appears to have failed or path not found."
+          }
+
+          $cppDir = Split-Path -Parent $found
+          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           clang-format --version
           cppcheck --version
@@ -322,10 +343,32 @@ jobs:
 
           choco install -y llvm cppcheck
 
-          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "C:\Program Files\Cppcheck" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (Test-Path $llvmBin) { $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
 
-          if (Get-Command refreshenv -ErrorAction SilentlyContinue) { refreshenv }
+          $candidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
+            "C:\ProgramData\chocolatey\bin\cppcheck.exe"
+          )
+
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $found) {
+            $found = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
+              -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
+              | Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $found) {
+            Write-Host "cppcheck.exe not found. Debug info:"
+            where.exe cppcheck 2>$null || Write-Host "where cppcheck: not found"
+            choco list --local-only | findstr /I cppcheck
+            throw "cppcheck installation appears to have failed or path not found."
+          }
+
+          $cppDir = Split-Path -Parent $found
+          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           clang-format --version
           cppcheck --version
