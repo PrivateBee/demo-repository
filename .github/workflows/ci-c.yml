@@ -154,7 +154,7 @@ jobs:
           if ($files.Count -gt 0) { "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
-      - name: Install C tools (Windows)
+      - name: Install C tools (Windows) (robust cppcheck path)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
         run: |
@@ -162,23 +162,28 @@ jobs:
 
           choco install -y llvm cppcheck
 
-          # LLVM
+          # LLVM -> PATH
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          # cppcheck (choco can install in different places)
-          $candidates = @(
-            "C:\ProgramData\chocolatey\bin",
-            "C:\Program Files\Cppcheck",
-            "C:\Program Files\Cppcheck\cppcheck",
-            "C:\Program Files (x86)\Cppcheck",
-            "C:\Program Files (x86)\Cppcheck\cppcheck"
-          )
-          foreach ($p in $candidates) {
-            if (Test-Path $p) { $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          # Find cppcheck.exe (actual path varies on windows runners)
+          $roots = @("C:\ProgramData\chocolatey\bin","C:\ProgramData\chocolatey\lib")
+          $cpp = $null
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              $hit = Get-ChildItem -Path $r -Recurse -Filter "cppcheck.exe" -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($hit) { $cpp = $hit.FullName; break }
+            }
           }
+          if (-not $cpp) {
+            Write-Host "cppcheck.exe not found after choco install. Debug listing:"
+            if (Test-Path "C:\ProgramData\chocolatey\lib") { Get-ChildItem "C:\ProgramData\chocolatey\lib" | Select-Object Name }
+            throw "cppcheck not found"
+          }
+          (Split-Path -Parent $cpp) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           clang-format --version
-          cppcheck --version
+          & $cpp --version
 
       - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
@@ -320,7 +325,7 @@ jobs:
           if ($files.Count -gt 0) { "has_cpp=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_cpp=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
-      - name: Install C++ tools (Windows)
+      - name: Install C++ tools (Windows) (robust cppcheck path)
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: pwsh
         run: |
@@ -330,19 +335,20 @@ jobs:
 
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          $candidates = @(
-            "C:\ProgramData\chocolatey\bin",
-            "C:\Program Files\Cppcheck",
-            "C:\Program Files\Cppcheck\cppcheck",
-            "C:\Program Files (x86)\Cppcheck",
-            "C:\Program Files (x86)\Cppcheck\cppcheck"
-          )
-          foreach ($p in $candidates) {
-            if (Test-Path $p) { $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          $roots = @("C:\ProgramData\chocolatey\bin","C:\ProgramData\chocolatey\lib")
+          $cpp = $null
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              $hit = Get-ChildItem -Path $r -Recurse -Filter "cppcheck.exe" -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($hit) { $cpp = $hit.FullName; break }
+            }
           }
+          if (-not $cpp) { throw "cppcheck not found" }
+          (Split-Path -Parent $cpp) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           clang-format --version
-          cppcheck --version
+          & $cpp --version
 
       - name: clang-format (LLVM) check [C++] (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true'
