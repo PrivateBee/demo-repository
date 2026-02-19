@@ -1,4 +1,4 @@
-name: "CI Quality (C/C++/Python/Java) - run ONLY matching OS (Linux/macOS vs Windows)"
+name: "CI Quality (C/C++/Python/Java) - run ONLY matching OS (unix vs windows)"
 
 on:
   pull_request:
@@ -12,9 +12,7 @@ permissions:
 
 jobs:
   # ==========================================================
-  # 1) Detect "origin OS" (heuristic)
-  #    - if CRLF found in tracked source files => windows
-  #    - else => unix (linux/macos)
+  # Detect origin OS (heuristic): CRLF => windows else unix
   # ==========================================================
   detect-origin:
     name: "Detect origin (windows vs unix)"
@@ -31,7 +29,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           FILES="$(git ls-files \
             '*.c' '*.h' '*.cpp' '*.hpp' '*.hxx' '*.cc' '*.cxx' \
             '*.py' '*.java' '*.yml' '*.yaml' '*.sh' '*.md' || true)"
@@ -50,21 +47,19 @@ jobs:
       - name: Show detected origin
         run: echo "Detected origin = ${{ steps.detector.outputs.origin }}"
 
-  # =========================
-  # C (format + static + compile) ONLY on matching OS
-  # =========================
-  quality-c:
-    name: "C Quality on ${{ matrix.os }}"
+  # ==========================================================
+  # C - UNIX (Linux + macOS)
+  # ==========================================================
+  quality-c-unix:
+    name: "C Quality (unix) on ${{ matrix.os }}"
     needs: [detect-origin]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    if: needs.detect-origin.outputs.origin == 'unix'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
-    if: |
-      (needs.detect-origin.outputs.origin == 'windows' && matrix.os == 'windows-2022') ||
-      (needs.detect-origin.outputs.origin == 'unix'    && (matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-14'))
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +75,6 @@ jobs:
             echo "has_c=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Install tools
       - name: Install C tools (Linux)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Linux'
         shell: bash
@@ -98,35 +92,16 @@ jobs:
           brew install llvm cppcheck
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      - name: Install C tools (Windows)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install -y llvm cppcheck
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      # FORCE FORMAT (clang-format -style=LLVM -i)
-      - name: Force LLVM format (C) (Linux/macOS)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
+      - name: Force LLVM format (C) - clang-format -i
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
           find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*" -print0 \
             | xargs -0 -I{} clang-format -style=LLVM -i "{}"
 
-      - name: Force LLVM format (C) (Windows)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Get-ChildItem -Recurse -File -Include *.c,*.h |
-            Where-Object { $_.FullName -notmatch "\\.git\\" } |
-            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
-
-      # CHECK STYLE
-      - name: Check LLVM style (C) (Linux/macOS)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
+      - name: Check LLVM style (C)
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -137,8 +112,72 @@ jobs:
             }
           done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
 
+      - name: Static analysis (cppcheck) [C]
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cppcheck --enable=all --inconclusive \
+            --inline-suppr --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            .
+
+      - name: Compile all C units (no linking)
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build_c/obj
+          while IFS= read -r f; do
+            out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
+            clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+          done < <(find . -type f -name "*.c" ! -path "./.git/*")
+
+      - name: C skipped (no .c)
+        if: steps.ccheck.outputs.has_c != 'true'
+        run: echo "No .c files -> skipping"
+
+  # ==========================================================
+  # C - WINDOWS
+  # ==========================================================
+  quality-c-windows:
+    name: "C Quality (windows)"
+    needs: [detect-origin]
+    if: needs.detect-origin.outputs.origin == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C files
+        id: ccheck
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.c
+          if ($files.Count -gt 0) { "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+          else { "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+
+      - name: Install C tools (Windows)
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: pwsh
+        run: |
+          choco install -y llvm cppcheck
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Force LLVM format (C) - clang-format -i (Windows)
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          Get-ChildItem -Recurse -File -Include *.c,*.h |
+            Where-Object { $_.FullName -notmatch "\\.git\\" } |
+            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
+
       - name: Check LLVM style (C) (Windows - robust)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -175,36 +214,20 @@ jobs:
             Remove-Item -Force $tmp
           }
 
-      # STATIC
-      - name: Static analysis (cppcheck) [C]
+      - name: Static analysis (cppcheck) [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          cppcheck --enable=all --inconclusive \
-            --inline-suppr --error-exitcode=1 \
-            --suppress=missingIncludeSystem \
-            .
+          $ErrorActionPreference="Stop"
+          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
 
-      # COMPILE
-      - name: Compile all C units (Linux/macOS)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p build_c/obj
-          while IFS= read -r f; do
-            out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
-            clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-          done < <(find . -type f -name "*.c" ! -path "./.git/*")
-
-      - name: Compile all C units (Windows)
-        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
+      - name: Compile all C units (Windows) (no linking)
+        if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
           New-Item -ItemType Directory -Force -Path build_c/obj | Out-Null
-          $files = Get-ChildItem -Recurse -File -Filter *.c | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          $files = Get-ChildItem -Recurse -File -Include *.c | Where-Object { $_.FullName -notmatch "\\.git\\" }
           foreach ($f in $files) {
             $safe = ($f.FullName -replace '^[A-Za-z]:\\', '' -replace '[\\/]', '_')
             & clang -std=c11 -Wall -Wextra -Werror -O2 -c $f.FullName -o "build_c/obj/$safe.obj"
@@ -212,23 +235,21 @@ jobs:
 
       - name: C skipped (no .c)
         if: steps.ccheck.outputs.has_c != 'true'
-        run: echo "No .c files found -> skipping C job"
+        run: echo "No .c files -> skipping"
 
-  # =========================
-  # C++ (format + static + compile) ONLY on matching OS
-  # =========================
-  quality-cpp:
-    name: "C++ Quality on ${{ matrix.os }}"
+  # ==========================================================
+  # C++ - UNIX (Linux + macOS)
+  # ==========================================================
+  quality-cpp-unix:
+    name: "C++ Quality (unix) on ${{ matrix.os }}"
     needs: [detect-origin]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    if: needs.detect-origin.outputs.origin == 'unix'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
-    if: |
-      (needs.detect-origin.outputs.origin == 'windows' && matrix.os == 'windows-2022') ||
-      (needs.detect-origin.outputs.origin == 'unix'    && (matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-14'))
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -261,30 +282,13 @@ jobs:
           brew install llvm cppcheck
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      - name: Install C++ tools (Windows)
-        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install -y llvm cppcheck
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Force LLVM format (C++) (Linux/macOS)
-        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
+      - name: Force LLVM format (C++) - clang-format -i
+        if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
         run: |
           set -euo pipefail
           find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*" -print0 \
             | xargs -0 -I{} clang-format -style=LLVM -i "{}"
-
-      - name: Force LLVM format (C++) (Windows)
-        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h |
-            Where-Object { $_.FullName -notmatch "\\.git\\" } |
-            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
 
       - name: Static analysis (cppcheck) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
@@ -296,8 +300,8 @@ jobs:
             --suppress=missingIncludeSystem \
             .
 
-      - name: Compile all C++ units (Linux/macOS)
-        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
+      - name: Compile all C++ units (no linking)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -307,8 +311,58 @@ jobs:
             clang++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done < <(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")
 
-      - name: Compile all C++ units (Windows)
-        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
+      - name: C++ skipped (no sources)
+        if: steps.cppcheck.outputs.has_cpp != 'true'
+        run: echo "No C++ files -> skipping"
+
+  # ==========================================================
+  # C++ - WINDOWS
+  # ==========================================================
+  quality-cpp-windows:
+    name: "C++ Quality (windows)"
+    needs: [detect-origin]
+    if: needs.detect-origin.outputs.origin == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C++ files
+        id: cppcheck
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx
+          if ($files.Count -gt 0) { "has_cpp=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+          else { "has_cpp=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+
+      - name: Install C++ tools (Windows)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: pwsh
+        run: |
+          choco install -y llvm cppcheck
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Force LLVM format (C++) - clang-format -i (Windows)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h |
+            Where-Object { $_.FullName -notmatch "\\.git\\" } |
+            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
+
+      - name: Static analysis (cppcheck) [C++] (Windows)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
+
+      - name: Compile all C++ units (Windows) (no linking)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
@@ -321,23 +375,21 @@ jobs:
 
       - name: C++ skipped (no sources)
         if: steps.cppcheck.outputs.has_cpp != 'true'
-        run: echo "No C++ files found -> skipping C++ job"
+        run: echo "No C++ files -> skipping"
 
-  # =========================
-  # PYTHON (format + lint + type + tests) ONLY on matching OS
-  # =========================
-  quality-python:
-    name: "Python Quality on ${{ matrix.os }}"
+  # ==========================================================
+  # PYTHON - UNIX (Linux + macOS)
+  # ==========================================================
+  quality-python-unix:
+    name: "Python Quality (unix) on ${{ matrix.os }}"
     needs: [detect-origin]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    if: needs.detect-origin.outputs.origin == 'unix'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
-    if: |
-      (needs.detect-origin.outputs.origin == 'windows' && matrix.os == 'windows-2022') ||
-      (needs.detect-origin.outputs.origin == 'unix'    && (matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-14'))
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -366,35 +418,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install ruff mypy pytest
 
-      - name: Format check (ruff)
+      - name: Ruff format check
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m ruff format --check .
 
-      - name: Lint (ruff)
+      - name: Ruff lint
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m ruff check .
 
-      - name: Type-check (mypy) best-effort
+      - name: Mypy (best-effort)
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m mypy . || true
 
-      - name: Syntax check (compileall)
+      - name: Compileall
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m compileall -q .
 
-      - name: Tests (pytest if present)
+      - name: Pytest if present
         if: steps.pycheck.outputs.has_py == 'true'
         shell: bash
         run: |
@@ -402,28 +454,93 @@ jobs:
           if [ -d "tests" ] || find . -maxdepth 3 -type f -name "test_*.py" | grep -q .; then
             python -m pytest -q
           else
-            echo "No tests detected -> skipping"
+            echo "No tests -> skipping"
           fi
 
       - name: Python skipped (no .py)
         if: steps.pycheck.outputs.has_py != 'true'
-        run: echo "No .py files found -> skipping Python job"
+        run: echo "No .py -> skipping"
 
-  # =========================
-  # JAVA (compile + optional tests) ONLY on matching OS
-  # =========================
-  quality-java:
-    name: "Java Quality on ${{ matrix.os }}"
+  # ==========================================================
+  # PYTHON - WINDOWS
+  # ==========================================================
+  quality-python-windows:
+    name: "Python Quality (windows)"
     needs: [detect-origin]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    if: needs.detect-origin.outputs.origin == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Python files
+        id: pycheck
+        shell: pwsh
+        run: |
+          $ErrorActionPreference="Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.py
+          if ($files.Count -gt 0) { "has_py=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+          else { "has_py=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+
+      - uses: actions/setup-python@v5
+        if: steps.pycheck.outputs.has_py == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Install tools
+        if: steps.pycheck.outputs.has_py == 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff mypy pytest
+
+      - name: Ruff format check
+        if: steps.pycheck.outputs.has_py == 'true'
+        shell: pwsh
+        run: |
+          python -m ruff format --check .
+
+      - name: Ruff lint
+        if: steps.pycheck.outputs.has_py == 'true'
+        shell: pwsh
+        run: |
+          python -m ruff check .
+
+      - name: Compileall
+        if: steps.pycheck.outputs.has_py == 'true'
+        shell: pwsh
+        run: |
+          python -m compileall -q .
+
+      - name: Pytest if present
+        if: steps.pycheck.outputs.has_py == 'true'
+        shell: pwsh
+        run: |
+          $tests = Test-Path "tests"
+          if ($tests) {
+            python -m pytest -q
+          } else {
+            Write-Host "No tests folder -> skipping"
+          }
+
+      - name: Python skipped (no .py)
+        if: steps.pycheck.outputs.has_py != 'true'
+        run: echo "No .py -> skipping"
+
+  # ==========================================================
+  # JAVA - UNIX (Linux + macOS)
+  # ==========================================================
+  quality-java-unix:
+    name: "Java Quality (unix) on ${{ matrix.os }}"
+    needs: [detect-origin]
+    if: needs.detect-origin.outputs.origin == 'unix'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
-    if: |
-      (needs.detect-origin.outputs.origin == 'windows' && matrix.os == 'windows-2022') ||
-      (needs.detect-origin.outputs.origin == 'unix'    && (matrix.os == 'ubuntu-24.04' || matrix.os == 'macos-14'))
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -445,7 +562,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Compile all Java files
+      - name: Compile all Java
         if: steps.javacheck.outputs.has_java == 'true'
         shell: bash
         run: |
@@ -454,39 +571,47 @@ jobs:
           mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
           javac -d out "${JAVA_FILES[@]}"
 
-      - name: Run tests if Maven/Gradle
-        if: steps.javacheck.outputs.has_java == 'true'
-        shell: bash
+      - name: Java skipped (no .java)
+        if: steps.javacheck.outputs.has_java != 'true'
+        run: echo "No .java -> skipping"
+
+  # ==========================================================
+  # JAVA - WINDOWS
+  # ==========================================================
+  quality-java-windows:
+    name: "Java Quality (windows)"
+    needs: [detect-origin]
+    if: needs.detect-origin.outputs.origin == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Java files
+        id: javacheck
+        shell: pwsh
         run: |
-          set -euo pipefail
-          if [ -f "pom.xml" ]; then
-            echo "pom.xml found -> mvn test"
-            if [ "${RUNNER_OS}" = "Windows" ]; then
-              choco install -y maven
-            elif [ "${RUNNER_OS}" = "macOS" ]; then
-              brew install maven
-            else
-              sudo apt-get update && sudo apt-get install -y maven
-            fi
-            mvn -q test
-            exit 0
-          fi
+          $ErrorActionPreference="Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.java
+          if ($files.Count -gt 0) { "has_java=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+          else { "has_java=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
-          if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "gradle build found -> gradle test"
-            if [ "${RUNNER_OS}" = "Windows" ]; then
-              choco install -y gradle
-            elif [ "${RUNNER_OS}" = "macOS" ]; then
-              brew install gradle
-            else
-              sudo apt-get update && sudo apt-get install -y gradle
-            fi
-            gradle test
-            exit 0
-          fi
+      - uses: actions/setup-java@v4
+        if: steps.javacheck.outputs.has_java == 'true'
+        with:
+          distribution: temurin
+          java-version: "17"
 
-          echo "No Maven/Gradle build detected -> skipping tests"
+      - name: Compile all Java
+        if: steps.javacheck.outputs.has_java == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $files = Get-ChildItem -Recurse -File -Include *.java | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          $paths = $files | ForEach-Object { $_.FullName }
+          javac -d out @paths
 
       - name: Java skipped (no .java)
         if: steps.javacheck.outputs.has_java != 'true'
-        run: echo "No .java files found -> skipping Java job"
+        run: echo "No .java -> skipping"
