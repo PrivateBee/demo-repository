@@ -1,4 +1,4 @@
-name: CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java
+name: CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java (Linux/Windows/macOS)
 
 on:
   pull_request:
@@ -11,13 +11,42 @@ permissions:
   contents: read
 
 jobs:
+  # ==========================================================
+  # COMMON: CRLF guard (runs on Linux; detects Windows CRLF)
+  # ==========================================================
+  guard-crlf:
+    name: Guard (no CRLF in sources)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if CRLF detected in source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Check common source files + scripts
+          if git grep -Il $'\r' -- \
+            '*.c' '*.h' '*.cpp' '*.hpp' '*.hxx' '*.cc' '*.cxx' \
+            '*.py' '*.java' '*.sh' '*.yml' '*.yaml' '*.md' ; then
+            echo "::error::CRLF detected in files above. Fix by converting to LF and/or using .gitattributes."
+            exit 1
+          fi
+          echo "OK: no CRLF found in targeted files."
+
   # =========================
-  # C ONLY
+  # C (format + static + compile) on all OS
   # =========================
   quality-c:
-    name: C (LLVM format + static + dynamic)
-    runs-on: ubuntu-24.04
+    name: C (LLVM format + static + compile) on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
+    needs: [guard-crlf]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,19 +61,33 @@ jobs:
             echo "has_c=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install C tools (only if C exists, pinned clang 18)
-        if: steps.ccheck.outputs.has_c == 'true'
+      # -------- Install tools per OS --------
+      - name: Install C tools (Linux)
+        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang-18 clang-format-18 clang-tidy-18 \
-            cppcheck valgrind
+            clang clang-format clang-tidy cppcheck
 
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+      - name: Install C tools (macOS)
+        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install C tools (Windows)
+        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y llvm cppcheck
+          # make clang-format/clang-tidy visible
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
       # 1) LLVM STYLE CHECK
@@ -93,9 +136,7 @@ jobs:
             echo "No .c files -> skipping clang-tidy"
             exit 0
           fi
-          clang-tidy -p . \
-            -checks="-*,clang-analyzer-*" \
-            "${TIDY_FILES[@]}"
+          clang-tidy -p . -checks="-*,clang-analyzer-*" "${TIDY_FILES[@]}"
 
       # -------------------------
       # 3) BUILD (compile everything, no linking)
@@ -110,12 +151,48 @@ jobs:
           for f in "${C_FILES[@]}"; do
             out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CC  $f"
-            gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            # Use clang if available, else fallback to gcc
+            if command -v clang >/dev/null 2>&1; then
+              clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            else
+              gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            fi
           done
 
-      # -------------------------
-      # 4) DYNAMIC ANALYSIS (only if exactly one main)
-      # -------------------------
+      - name: C skipped (no .c)
+        if: steps.ccheck.outputs.has_c != 'true'
+        run: echo "No .c files found -> skipping C job"
+
+  # =========================
+  # C DYNAMIC (Linux only)
+  # =========================
+  quality-c-dynamic:
+    name: C (dynamic: ASan/UBSan + Valgrind) on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    needs: [guard-crlf]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C files
+        id: ccheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f -name "*.c" ! -path "./.git/*" | grep -q .; then
+            echo "has_c=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_c=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C tools (Linux)
+        if: steps.ccheck.outputs.has_c == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang valgrind
+
       - name: Link & run with sanitizers + valgrind (only if exactly one main) [C]
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
@@ -149,17 +226,23 @@ jobs:
             "${C_FILES[@]}" -o build_c/app_vg
           valgrind --error-exitcode=1 --leak-check=full ./build_c/app_vg
 
-      - name: C skipped (no .c)
+      - name: C dynamic skipped (no .c)
         if: steps.ccheck.outputs.has_c != 'true'
-        run: echo "No .c files found -> skipping C job"
+        run: echo "No .c files found -> skipping C dynamic job"
 
   # =========================
-  # C++ ONLY
+  # C++ (format + static + compile) on all OS
   # =========================
   quality-cpp:
-    name: C++ (LLVM format + static + dynamic)
-    runs-on: ubuntu-24.04
+    name: C++ (LLVM format + static + compile) on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
+    needs: [guard-crlf]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -174,21 +257,32 @@ jobs:
             echo "has_cpp=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install C++ tools (only if C++ exists, pinned clang 18)
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      # -------- Install tools per OS --------
+      - name: Install C++ tools (Linux)
+        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang-18 clang++-18 \
-            clang-format-18 clang-tidy-18 \
-            cppcheck valgrind
+            clang clang++ clang-format clang-tidy cppcheck
 
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+      - name: Install C++ tools (macOS)
+        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install C++ tools (Windows)
+        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y llvm cppcheck
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
       # 1) LLVM STYLE CHECK
@@ -261,12 +355,47 @@ jobs:
           for f in "${CPP_FILES[@]}"; do
             out="build_cpp/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CXX $f"
-            g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            if command -v clang++ >/dev/null 2>&1; then
+              clang++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            else
+              g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+            fi
           done
 
-      # -------------------------
-      # 4) DYNAMIC ANALYSIS (only if exactly one main)
-      # -------------------------
+      - name: C++ skipped (no C++ sources)
+        if: steps.cppcheck.outputs.has_cpp != 'true'
+        run: echo "No C++ files found -> skipping C++ job"
+
+  # =========================
+  # C++ DYNAMIC (Linux only)
+  # =========================
+  quality-cpp-dynamic:
+    name: C++ (dynamic: ASan/UBSan + Valgrind) on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    needs: [guard-crlf]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C++ files
+        id: cppcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*" | grep -q .; then
+            echo "has_cpp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cpp=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C++ tools (Linux)
+        if: steps.cppcheck.outputs.has_cpp == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang clang++ valgrind
+
       - name: Link & run with sanitizers + valgrind (only if exactly one main) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
@@ -303,17 +432,23 @@ jobs:
             "${CPP_FILES[@]}" -o build_cpp/app_vg
           valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_vg
 
-      - name: C++ skipped (no C++ sources)
+      - name: C++ dynamic skipped (no C++ sources)
         if: steps.cppcheck.outputs.has_cpp != 'true'
-        run: echo "No C++ files found -> skipping C++ job"
+        run: echo "No C++ files found -> skipping C++ dynamic job"
 
   # =========================
-  # PYTHON
+  # PYTHON (all OS)
   # =========================
   quality-python:
-    name: Python (format + static + compile + tests/run)
-    runs-on: ubuntu-24.04
+    name: Python (format + static + compile + tests/run) on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    needs: [guard-crlf]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -392,12 +527,18 @@ jobs:
         run: echo "No .py files found -> skipping"
 
   # =========================
-  # JAVA
+  # JAVA (all OS)
   # =========================
   quality-java:
-    name: Java (style + static + compile + tests/run)
-    runs-on: ubuntu-24.04
+    name: Java (style + static + compile + tests/run) on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
+    needs: [guard-crlf]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -418,13 +559,28 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Java static tools (only if Java exists)
-        if: steps.javacheck.outputs.has_java == 'true'
+      # Install checkstyle/spotbugs depending on OS
+      - name: Install Java static tools (Linux)
+        if: steps.javacheck.outputs.has_java == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends checkstyle spotbugs
+
+      - name: Install Java static tools (macOS)
+        if: steps.javacheck.outputs.has_java == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install checkstyle spotbugs
+
+      - name: Install Java static tools (Windows)
+        if: steps.javacheck.outputs.has_java == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y checkstyle spotbugs
 
       - name: Java style check (Checkstyle - basic)
         if: steps.javacheck.outputs.has_java == 'true'
@@ -478,13 +634,26 @@ jobs:
 
           if [ -f "pom.xml" ]; then
             echo "pom.xml found -> running mvn test"
-            sudo apt-get update && sudo apt-get install -y maven
+            if [ "${RUNNER_OS}" = "Windows" ]; then
+              choco install -y maven
+            elif [ "${RUNNER_OS}" = "macOS" ]; then
+              brew install maven
+            else
+              sudo apt-get update && sudo apt-get install -y maven
+            fi
             mvn -q test
             exit 0
           fi
+
           if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
             echo "gradle build found -> running gradle test"
-            sudo apt-get update && sudo apt-get install -y gradle
+            if [ "${RUNNER_OS}" = "Windows" ]; then
+              choco install -y gradle
+            elif [ "${RUNNER_OS}" = "macOS" ]; then
+              brew install gradle
+            else
+              sudo apt-get update && sudo apt-get install -y gradle
+            fi
             gradle test
             exit 0
           fi
