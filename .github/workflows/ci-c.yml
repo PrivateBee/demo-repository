@@ -34,10 +34,10 @@ jobs:
           echo "OK: no CRLF found in targeted files."
 
   # =========================
-  # C (format + static + compile) on all OS
+  # C (auto-format LLVM + static + compile) on all OS
   # =========================
   quality-c:
-    name: "C (LLVM format + static + compile) on ${{ matrix.os }}"
+    name: "C (LLVM auto-format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -87,7 +87,29 @@ jobs:
           echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
-      # 1) LLVM STYLE CHECK
+      # 0) AUTO-FORMAT LLVM
+      # -------------------------
+      - name: Auto-format LLVM (clang-format) [C] (Linux/macOS)
+        if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            clang-format -style=LLVM -i "$f"
+          done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
+
+      - name: Auto-format LLVM (clang-format) [C] (Windows)
+        if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.c,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          foreach ($f in $files) {
+            & clang-format -style=LLVM -i $f.FullName
+          }
+
+      # -------------------------
+      # 1) (Optional) CHECK LLVM STYLE (should pass after auto-format)
       # -------------------------
       - name: Check LLVM style (clang-format) [C] (Linux/macOS)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
@@ -98,7 +120,7 @@ jobs:
           while IFS= read -r f; do
             found=1
             clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
+              echo "::error file=$f::clang-format LLVM mismatch (unexpected after auto-format)"
               exit 1
             }
           done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
@@ -117,7 +139,7 @@ jobs:
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = Get-Content -Raw -LiteralPath $f.FullName
             if ($formatted -ne $current) {
-              Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
+              Write-Error "clang-format LLVM mismatch (unexpected after auto-format): $($f.FullName)"
               exit 1
             }
           }
@@ -261,10 +283,10 @@ jobs:
         run: echo "No .c files found -> skipping C dynamic job"
 
   # =========================
-  # C++ (format + static + compile) on all OS
+  # C++ (auto-format LLVM + static + compile) on all OS
   # =========================
   quality-cpp:
-    name: "C++ (LLVM format + static + compile) on ${{ matrix.os }}"
+    name: "C++ (LLVM auto-format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -314,7 +336,31 @@ jobs:
           echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
-      # 1) LLVM STYLE CHECK
+      # 0) AUTO-FORMAT LLVM
+      # -------------------------
+      - name: Auto-format LLVM (clang-format) [C++] (Linux/macOS)
+        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            clang-format -style=LLVM -i "$f"
+          done < <(
+            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*"
+          )
+
+      - name: Auto-format LLVM (clang-format) [C++] (Windows)
+        if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          foreach ($f in $files) {
+            & clang-format -style=LLVM -i $f.FullName
+          }
+
+      # -------------------------
+      # 1) (Optional) CHECK LLVM STYLE
       # -------------------------
       - name: Check LLVM style (clang-format) [C++] (Linux/macOS)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
@@ -325,7 +371,7 @@ jobs:
           while IFS= read -r f; do
             found=1
             clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
+              echo "::error file=$f::clang-format LLVM mismatch (unexpected after auto-format)"
               exit 1
             }
           done < <(
@@ -346,7 +392,7 @@ jobs:
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = Get-Content -Raw -LiteralPath $f.FullName
             if ($formatted -ne $current) {
-              Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
+              Write-Error "clang-format LLVM mismatch (unexpected after auto-format): $($f.FullName)"
               exit 1
             }
           }
@@ -740,7 +786,6 @@ jobs:
             exit 0
           fi
 
-          # best-effort: run if exactly one main
           MAIN_SRCS="$(grep -Rsl --include="*.java" "public static void main" . | sort || true)"
           if [ -z "$MAIN_SRCS" ]; then
             echo "No main() found -> skipping run"
