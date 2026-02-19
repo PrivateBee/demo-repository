@@ -109,7 +109,7 @@ jobs:
           }
 
       # -------------------------
-      # 1) (Optional) CHECK LLVM STYLE (should pass after auto-format)
+      # 1) CHECK LLVM STYLE (Windows: normalize LF + remove BOM)
       # -------------------------
       - name: Check LLVM style (clang-format) [C] (Linux/macOS)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
@@ -133,13 +133,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          function Normalize-Text([string]$s) {
+            if ($null -eq $s) { return "" }
+            if ($s.Length -gt 0 -and [int]$s[0] -eq 0xFEFF) { $s = $s.Substring(1) } # BOM
+            $s = $s -replace "`r`n", "`n"
+            $s = $s -replace "`r", "`n"
+            return $s
+          }
+
           $files = Get-ChildItem -Recurse -File -Include *.c,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
           if ($files.Count -eq 0) { Write-Host "No C files -> skipping"; exit 0 }
+
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
-            $current = Get-Content -Raw -LiteralPath $f.FullName
-            if ($formatted -ne $current) {
-              Write-Error "clang-format LLVM mismatch (unexpected after auto-format): $($f.FullName)"
+            $current = [System.IO.File]::ReadAllText($f.FullName)
+
+            $formattedN = Normalize-Text $formatted
+            $currentN   = Normalize-Text $current
+
+            if ($formattedN -ne $currentN) {
+              Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
               exit 1
             }
           }
@@ -360,7 +374,7 @@ jobs:
           }
 
       # -------------------------
-      # 1) (Optional) CHECK LLVM STYLE
+      # 1) CHECK LLVM STYLE (Windows: normalize LF + remove BOM)
       # -------------------------
       - name: Check LLVM style (clang-format) [C++] (Linux/macOS)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
@@ -386,13 +400,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          function Normalize-Text([string]$s) {
+            if ($null -eq $s) { return "" }
+            if ($s.Length -gt 0 -and [int]$s[0] -eq 0xFEFF) { $s = $s.Substring(1) } # BOM
+            $s = $s -replace "`r`n", "`n"
+            $s = $s -replace "`r", "`n"
+            return $s
+          }
+
           $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
           if ($files.Count -eq 0) { Write-Host "No C++ files -> skipping"; exit 0 }
+
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
-            $current = Get-Content -Raw -LiteralPath $f.FullName
-            if ($formatted -ne $current) {
-              Write-Error "clang-format LLVM mismatch (unexpected after auto-format): $($f.FullName)"
+            $current = [System.IO.File]::ReadAllText($f.FullName)
+
+            $formattedN = Normalize-Text $formatted
+            $currentN   = Normalize-Text $current
+
+            if ($formattedN -ne $currentN) {
+              Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
               exit 1
             }
           }
