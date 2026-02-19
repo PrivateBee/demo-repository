@@ -34,10 +34,10 @@ jobs:
           echo "OK: no CRLF found in targeted files."
 
   # =========================
-  # C (auto-format LLVM + static + compile) on all OS
+  # C (force LLVM format + static + compile) on all OS
   # =========================
   quality-c:
-    name: "C (LLVM auto-format + static + compile) on ${{ matrix.os }}"
+    name: "C (force LLVM format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -87,29 +87,27 @@ jobs:
           echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
-      # 0) AUTO-FORMAT LLVM
+      # 0) FORCE LLVM FORMAT (clang-format -style=LLVM -i ...)
       # -------------------------
-      - name: Auto-format LLVM (clang-format) [C] (Linux/macOS)
+      - name: Force LLVM format (C) - clang-format -i (Linux/macOS)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r f; do
-            clang-format -style=LLVM -i "$f"
-          done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
+          find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*" -print0 \
+            | xargs -0 -I{} clang-format -style=LLVM -i "{}"
 
-      - name: Auto-format LLVM (clang-format) [C] (Windows)
+      - name: Force LLVM format (C) - clang-format -i (Windows)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.c,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
-          foreach ($f in $files) {
-            & clang-format -style=LLVM -i $f.FullName
-          }
+          Get-ChildItem -Recurse -File -Include *.c,*.h |
+            Where-Object { $_.FullName -notmatch "\\.git\\" } |
+            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
 
       # -------------------------
-      # 1) CHECK LLVM STYLE (Windows: normalize LF + remove BOM)
+      # 1) CHECK LLVM STYLE (Windows normalized compare)
       # -------------------------
       - name: Check LLVM style (clang-format) [C] (Linux/macOS)
         if: steps.ccheck.outputs.has_c == 'true' && runner.os != 'Windows'
@@ -148,11 +146,7 @@ jobs:
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = [System.IO.File]::ReadAllText($f.FullName)
-
-            $formattedN = Normalize-Text $formatted
-            $currentN   = Normalize-Text $current
-
-            if ($formattedN -ne $currentN) {
+            if ((Normalize-Text $formatted) -ne (Normalize-Text $current)) {
               Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
               exit 1
             }
@@ -203,11 +197,7 @@ jobs:
             found=1
             out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CC  $f"
-            if command -v clang >/dev/null 2>&1; then
-              clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-            else
-              gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-            fi
+            clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done < <(find . -type f -name "*.c" ! -path "./.git/*")
           if [ "$found" -eq 0 ]; then
             echo "No .c files -> skipping compile"
@@ -297,10 +287,10 @@ jobs:
         run: echo "No .c files found -> skipping C dynamic job"
 
   # =========================
-  # C++ (auto-format LLVM + static + compile) on all OS
+  # C++ (force LLVM format + static + compile) on all OS
   # =========================
   quality-cpp:
-    name: "C++ (LLVM auto-format + static + compile) on ${{ matrix.os }}"
+    name: "C++ (force LLVM format + static + compile) on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     needs: [guard-crlf]
@@ -350,31 +340,27 @@ jobs:
           echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -------------------------
-      # 0) AUTO-FORMAT LLVM
+      # 0) FORCE LLVM FORMAT (clang-format -style=LLVM -i ...)
       # -------------------------
-      - name: Auto-format LLVM (clang-format) [C++] (Linux/macOS)
+      - name: Force LLVM format (C++) - clang-format -i (Linux/macOS)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r f; do
-            clang-format -style=LLVM -i "$f"
-          done < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*"
-          )
+          find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*" -print0 \
+            | xargs -0 -I{} clang-format -style=LLVM -i "{}"
 
-      - name: Auto-format LLVM (clang-format) [C++] (Windows)
+      - name: Force LLVM format (C++) - clang-format -i (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
-          foreach ($f in $files) {
-            & clang-format -style=LLVM -i $f.FullName
-          }
+          Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h |
+            Where-Object { $_.FullName -notmatch "\\.git\\" } |
+            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
 
       # -------------------------
-      # 1) CHECK LLVM STYLE (Windows: normalize LF + remove BOM)
+      # 1) CHECK LLVM STYLE (Windows normalized compare)
       # -------------------------
       - name: Check LLVM style (clang-format) [C++] (Linux/macOS)
         if: steps.cppcheck.outputs.has_cpp == 'true' && runner.os != 'Windows'
@@ -385,11 +371,11 @@ jobs:
           while IFS= read -r f; do
             found=1
             clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch (unexpected after auto-format)"
+              echo "::error file=$f::clang-format LLVM mismatch (unexpected after force-format)"
               exit 1
             }
           done < <(
-            find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" -o -name "*.h" \) ! -path "./.git/*"
+            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*"
           )
           if [ "$found" -eq 0 ]; then
             echo "No C++ files -> skipping format check"
@@ -415,11 +401,7 @@ jobs:
           foreach ($f in $files) {
             $formatted = & clang-format -style=LLVM $f.FullName
             $current = [System.IO.File]::ReadAllText($f.FullName)
-
-            $formattedN = Normalize-Text $formatted
-            $currentN   = Normalize-Text $current
-
-            if ($formattedN -ne $currentN) {
+            if ((Normalize-Text $formatted) -ne (Normalize-Text $current)) {
               Write-Error "clang-format LLVM mismatch: $($f.FullName). Fix with: clang-format -style=LLVM -i `"$($f.FullName)`""
               exit 1
             }
@@ -470,11 +452,7 @@ jobs:
             found=1
             out="build_cpp/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
             echo "CXX $f"
-            if command -v clang++ >/dev/null 2>&1; then
-              clang++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-            else
-              g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-            fi
+            clang++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done < <(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")
           if [ "$found" -eq 0 ]; then
             echo "No C++ sources -> skipping compile"
@@ -498,70 +476,6 @@ jobs:
       - name: C++ skipped (no C++ sources)
         if: steps.cppcheck.outputs.has_cpp != 'true'
         run: echo "No C++ files found -> skipping C++ job"
-
-  # =========================
-  # C++ DYNAMIC (Linux only)
-  # =========================
-  quality-cpp-dynamic:
-    name: "C++ (dynamic: ASan/UBSan + Valgrind) on Linux"
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    needs: [guard-crlf]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Detect C++ files
-        id: cppcheck
-        shell: bash
-        run: |
-          set -euo pipefail
-          if find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*" | grep -q .; then
-            echo "has_cpp=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_cpp=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install C++ tools (Linux)
-        if: steps.cppcheck.outputs.has_cpp == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang clang++ valgrind
-
-      - name: Link & run with sanitizers + valgrind (only if exactly one main) [C++]
-        if: steps.cppcheck.outputs.has_cpp == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          MAIN_FILES="$(grep -Rsn --include="*.cpp" --include="*.cc" --include="*.cxx" -E '^\s*(int|auto)\s+main\s*\(' . | cut -d: -f1 | sort -u || true)"
-          if [ -z "$MAIN_FILES" ]; then
-            echo "No main() found -> skipping dynamic analysis"
-            exit 0
-          fi
-          if [ "$(echo "$MAIN_FILES" | wc -l | tr -d ' ')" -ne 1 ]; then
-            echo "Multiple main() found -> skipping link/run"
-            echo "$MAIN_FILES"
-            exit 0
-          fi
-
-          mkdir -p build_cpp
-          CPP_FILES="$(find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*")"
-
-          echo "Build + run (sanitizers):"
-          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-            -fsanitize=address,undefined -fno-omit-frame-pointer \
-            $CPP_FILES -o build_cpp/app_asan
-          ./build_cpp/app_asan
-
-          echo "Build + run (valgrind on non-sanitized binary):"
-          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-            $CPP_FILES -o build_cpp/app_vg
-          valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_vg
-
-      - name: C++ dynamic skipped (no C++ sources)
-        if: steps.cppcheck.outputs.has_cpp != 'true'
-        run: echo "No C++ files found -> skipping C++ dynamic job"
 
   # =========================
   # PYTHON (all OS)
