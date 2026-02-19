@@ -92,25 +92,14 @@ jobs:
           brew install llvm cppcheck
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      - name: Force LLVM format (C) - clang-format -i
+      - name: clang-format (LLVM) check [C]
         if: steps.ccheck.outputs.has_c == 'true'
         shell: bash
         run: |
           set -euo pipefail
           find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*" -print0 \
             | xargs -0 -I{} clang-format -style=LLVM -i "{}"
-
-      - name: Check LLVM style (C)
-        if: steps.ccheck.outputs.has_c == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          while IFS= read -r f; do
-            clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch"
-              exit 1
-            }
-          done < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
+          git diff --exit-code
 
       - name: Static analysis (cppcheck) [C]
         if: steps.ccheck.outputs.has_c == 'true'
@@ -150,6 +139,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Git EOL settings (Windows)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - name: Detect C files
         id: ccheck
         shell: pwsh
@@ -164,10 +159,11 @@ jobs:
         shell: pwsh
         run: |
           choco install -y llvm cppcheck
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          clang-format --version
+          cppcheck --version
 
-      - name: Force LLVM format (C) - clang-format -i (Windows)
+      - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
         run: |
@@ -175,44 +171,7 @@ jobs:
           Get-ChildItem -Recurse -File -Include *.c,*.h |
             Where-Object { $_.FullName -notmatch "\\.git\\" } |
             ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
-
-      - name: Check LLVM style (C) (Windows - robust)
-        if: steps.ccheck.outputs.has_c == 'true'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          function Normalize-File([string]$path) {
-            $bytes = [System.IO.File]::ReadAllBytes($path)
-            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-              $bytes = $bytes[3..($bytes.Length-1)]
-            }
-            $text = [System.Text.Encoding]::UTF8.GetString($bytes)
-            $text = $text -replace "`r`n", "`n"
-            $text = $text -replace "`r", "`n"
-            if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
-            [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
-          }
-
-          $files = Get-ChildItem -Recurse -File -Include *.c,*.h | Where-Object { $_.FullName -notmatch "\\.git\\" }
-          if ($files.Count -eq 0) { Write-Host "No C files -> skipping"; exit 0 }
-
-          foreach ($f in $files) {
-            $tmp = Join-Path $env:RUNNER_TEMP ("cf_" + [System.Guid]::NewGuid().ToString() + ".tmp")
-            $formatted = & clang-format -style=LLVM $f.FullName
-            [System.IO.File]::WriteAllText($tmp, $formatted, (New-Object System.Text.UTF8Encoding($false)))
-
-            Normalize-File $f.FullName
-            Normalize-File $tmp
-
-            $a = [System.IO.File]::ReadAllBytes($f.FullName)
-            $b = [System.IO.File]::ReadAllBytes($tmp)
-
-            if ($a.Length -ne $b.Length) { throw "clang-format mismatch: $($f.FullName)" }
-            for ($i=0; $i -lt $a.Length; $i++) { if ($a[$i] -ne $b[$i]) { throw "clang-format mismatch: $($f.FullName)" } }
-
-            Remove-Item -Force $tmp
-          }
+          git diff --exit-code
 
       - name: Static analysis (cppcheck) [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
@@ -282,13 +241,14 @@ jobs:
           brew install llvm cppcheck
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      - name: Force LLVM format (C++) - clang-format -i
+      - name: clang-format (LLVM) check [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: bash
         run: |
           set -euo pipefail
           find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*" -print0 \
             | xargs -0 -I{} clang-format -style=LLVM -i "{}"
+          git diff --exit-code
 
       - name: Static analysis (cppcheck) [C++]
         if: steps.cppcheck.outputs.has_cpp == 'true'
@@ -328,6 +288,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Git EOL settings (Windows)
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - name: Detect C++ files
         id: cppcheck
         shell: pwsh
@@ -342,10 +308,11 @@ jobs:
         shell: pwsh
         run: |
           choco install -y llvm cppcheck
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          echo $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          clang-format --version
+          cppcheck --version
 
-      - name: Force LLVM format (C++) - clang-format -i (Windows)
+      - name: clang-format (LLVM) check [C++] (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: pwsh
         run: |
@@ -353,6 +320,7 @@ jobs:
           Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h |
             Where-Object { $_.FullName -notmatch "\\.git\\" } |
             ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
+          git diff --exit-code
 
       - name: Static analysis (cppcheck) [C++] (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true'
@@ -517,12 +485,8 @@ jobs:
         if: steps.pycheck.outputs.has_py == 'true'
         shell: pwsh
         run: |
-          $tests = Test-Path "tests"
-          if ($tests) {
-            python -m pytest -q
-          } else {
-            Write-Host "No tests folder -> skipping"
-          }
+          if (Test-Path "tests") { python -m pytest -q }
+          else { Write-Host "No tests folder -> skipping" }
 
       - name: Python skipped (no .py)
         if: steps.pycheck.outputs.has_py != 'true'
@@ -603,14 +567,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Compile all Java
+      - name: Compile all Java (Windows)
         if: steps.javacheck.outputs.has_java == 'true'
         shell: pwsh
         run: |
+          $ErrorActionPreference="Stop"
           New-Item -ItemType Directory -Force -Path out | Out-Null
           $files = Get-ChildItem -Recurse -File -Include *.java | Where-Object { $_.FullName -notmatch "\\.git\\" }
           $paths = $files | ForEach-Object { $_.FullName }
-          javac -d out @paths
+          if ($paths.Count -eq 0) { Write-Host "No Java files -> skipping"; exit 0 }
+          & javac -d out $paths
 
       - name: Java skipped (no .java)
         if: steps.javacheck.outputs.has_java != 'true'
