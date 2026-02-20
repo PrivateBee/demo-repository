@@ -162,7 +162,7 @@ jobs:
           $ErrorActionPreference="Stop"
 
           # Portable => évite MSI/PATH non appliqué
-          choco install -y llvm cppcheck.portable
+          choco install -y llvm cppcheck
 
           # Recharge PATH dans la session courante
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
