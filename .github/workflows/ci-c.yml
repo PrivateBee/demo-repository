@@ -160,39 +160,39 @@ jobs:
         run: |
           $ErrorActionPreference="Stop"
 
-          choco install -y llvm cppcheck
+          # 1. Force l'installation de cppcheck
+          choco install -y llvm cppcheck --no-progress
 
-          # LLVM
+          # 2. Ajout immédiat de LLVM au PATH de la session et de l'Action
           $llvmBin = "C:\Program Files\LLVM\bin"
-          if (Test-Path $llvmBin) { 
-            $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append 
-            # On l'ajoute aussi à la session actuelle pour clang-format
+          if (Test-Path $llvmBin) {
+            $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
             $env:PATH = "$llvmBin;$env:PATH"
           }
-          # Try to locate cppcheck.exe anywhere common
-          $candidates = @(
-            "C:\Program Files\Cppcheck\cppcheck.exe",
-            "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
-            "C:\ProgramData\chocolatey\bin\cppcheck.exe"
-          )
 
-          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          # 3. Localisation dynamique et création d'un alias
+          # On cherche dans les dossiers standards de Chocolatey et Program Files
+          $cppExe = Get-ChildItem -Path "C:\Program Files\Cppcheck", "C:\ProgramData\chocolatey\bin" -Filter "cppcheck.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 
-          if (-not $found) {
-            # fallback: search disk (limited to common roots)
-            $found = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
-              -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
-              | Select-Object -First 1 -ExpandProperty FullName
+          if ($null -eq $cppExe) {
+              # Si tjs pas trouvé, on tente un "where"
+              $cppExe = where.exe cppcheck.exe | Select-Object -First 1
           }
 
-          if (-not $found) { throw "cppcheck.exe non trouvé après installation." }
+          if ($null -ne $cppExe) {
+              Write-Host "Cppcheck trouvé ici : $cppExe"
+              $cppDir = Split-Path -Parent $cppExe
+              $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              
+              # LA SOLUTION : Créer un alias pour la session actuelle
+              New-Alias -Name cppcheck -Value $cppExe -Scope Global
+          } else {
+              throw "Impossible de localiser cppcheck.exe après l'installation."
+          }
 
-          $cppDir = Split-Path -Parent $found
-          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
+          # 4. Vérification
           clang-format --version
-          cppcheck --version
-
+          cppcheck --version # Devrait maintenant fonctionner via l'alias
       - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
