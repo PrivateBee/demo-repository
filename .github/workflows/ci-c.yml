@@ -127,7 +127,7 @@ jobs:
         run: echo "No .c files -> skipping"
 
   # ==========================================================
-  # C - WINDOWS
+  # C - WINDOWS  ✅ FIXED
   # ==========================================================
   quality-c-windows:
     name: "C Quality (windows)"
@@ -154,64 +154,36 @@ jobs:
           if ($files.Count -gt 0) { "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
-      - name: Install C tools (Windows)
+      - name: Install C tools (Windows) [cppcheck.portable + output path]
+        id: install_c
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
 
-          # 1. Force l'installation de cppcheck
-          choco install -y llvm cppcheck 
+          # Portable => évite MSI/PATH non appliqué
+          choco install -y llvm cppcheck.portable
 
-           # LLVM bin
+          # Recharge PATH dans la session courante
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
+          refreshenv
+
+          # LLVM bin (clang/clang-format)
           $llvmBin = "C:\Program Files\LLVM\bin"
           if (-not (Test-Path $llvmBin)) { throw "LLVM bin not found at: $llvmBin" }
-
-          # PATH step courant + steps suivants
-          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $env:PATH = "$llvmBin;$env:PATH"
-         
-          
-           # Trouver cppcheck.exe (robuste)
-            $candidates = @(
-              "C:\Program Files\Cppcheck\cppcheck.exe",
-              "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
-              "C:\ProgramData\chocolatey\bin\cppcheck.exe")
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          # 3. Localisation dynamique et création d'un alias
-          # On cherche dans les dossiers standards de Chocolatey et Program Files
-          $cppExe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          # Localise cppcheck via Get-Command (reliable avec portable)
+          $cpp = Get-Command cppcheck -ErrorAction Stop
+          $cppExe = $cpp.Source
 
-          if (-not $cppExe) {
-          # fallback: recherche dans quelques roots
-          $cppExe = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
-            -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
-            | Select-Object -First 1 -ExpandProperty FullName
-            }
-
-          if (-not $cppExe) {
-            # fallback: where.exe
-            try { $cppExe = (where.exe cppcheck.exe | Select-Object -First 1) } catch { $cppExe = $null }
-          }
-
-           if (-not $cppExe) {
-            Write-Host "cppcheck.exe not found. Debug:"
-            choco list --local-only | findstr /I cppcheck
-            where.exe cppcheck.exe 2>$null || Write-Host "where cppcheck.exe: not found"
-            throw "Impossible de localiser cppcheck.exe après installation."
-          }
-
-          Write-Host "Cppcheck trouvé ici : $cppExe"
+          Write-Host "cppcheck resolved to: $cppExe"
           "cppcheck_path=$cppExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-
-         
-
-          # 4. Vérification
           clang-format --version
-          cppcheck --version # Devrait maintenant fonctionner via l'alias
-          
-         
+          & $cppExe --version
+
       - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
@@ -227,7 +199,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
+          $cppcheck = '${{ steps.install_c.outputs.cppcheck_path }}'
+          if (-not $cppcheck) { throw "cppcheck_path is empty (install step didn't run?)" }
+          & $cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
 
       - name: Compile all C units (Windows) (no linking)
         if: steps.ccheck.outputs.has_c == 'true'
@@ -325,7 +299,7 @@ jobs:
         run: echo "No C++ files -> skipping"
 
   # ==========================================================
-  # C++ - WINDOWS
+  # C++ - WINDOWS  ✅ FIXED
   # ==========================================================
   quality-cpp-windows:
     name: "C++ Quality (windows)"
@@ -348,47 +322,34 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx
+          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx -ErrorAction SilentlyContinue
           if ($files.Count -gt 0) { "has_cpp=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_cpp=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
-      - name: Install C++ tools (Windows)
+      - name: Install C++ tools (Windows) [cppcheck.portable + output path]
+        id: install_cpp
         if: steps.cppcheck.outputs.has_cpp == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
 
-          choco install -y llvm cppcheck
+          choco install -y llvm cppcheck.portable
+
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
+          refreshenv
 
           $llvmBin = "C:\Program Files\LLVM\bin"
-          if (Test-Path $llvmBin) { $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          if (-not (Test-Path $llvmBin)) { throw "LLVM bin not found at: $llvmBin" }
+          $env:PATH = "$llvmBin;$env:PATH"
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-          $candidates = @(
-            "C:\Program Files\Cppcheck\cppcheck.exe",
-            "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
-            "C:\ProgramData\chocolatey\bin\cppcheck.exe"
-          )
-
-          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          if (-not $found) {
-            $found = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
-              -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
-              | Select-Object -First 1 -ExpandProperty FullName
-          }
-
-          if (-not $found) {
-            Write-Host "cppcheck.exe not found. Debug info:"
-            where.exe cppcheck 2>$null || Write-Host "where cppcheck: not found"
-            choco list --local-only | findstr /I cppcheck
-            throw "cppcheck installation appears to have failed or path not found."
-          }
-
-          $cppDir = Split-Path -Parent $found
-          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $cpp = Get-Command cppcheck -ErrorAction Stop
+          $cppExe = $cpp.Source
+          Write-Host "cppcheck resolved to: $cppExe"
+          "cppcheck_path=$cppExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
           clang-format --version
-          cppcheck --version
+          & $cppExe --version
 
       - name: clang-format (LLVM) check [C++] (Windows)
         if: steps.cppcheck.outputs.has_cpp == 'true'
@@ -405,7 +366,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
+          $cppcheck = '${{ steps.install_cpp.outputs.cppcheck_path }}'
+          if (-not $cppcheck) { throw "cppcheck_path is empty (install step didn't run?)" }
+          & $cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
 
       - name: Compile all C++ units (Windows) (no linking)
         if: steps.cppcheck.outputs.has_cpp == 'true'
@@ -525,7 +488,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.py
+          $files = Get-ChildItem -Recurse -File -Include *.py -ErrorAction SilentlyContinue
           if ($files.Count -gt 0) { "has_py=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_py=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
@@ -635,7 +598,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.java
+          $files = Get-ChildItem -Recurse -File -Include *.java -ErrorAction SilentlyContinue
           if ($files.Count -gt 0) { "has_java=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_java=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
