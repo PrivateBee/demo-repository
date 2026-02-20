@@ -164,8 +164,11 @@ jobs:
 
           # LLVM
           $llvmBin = "C:\Program Files\LLVM\bin"
-          if (Test-Path $llvmBin) { $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
-
+          if (Test-Path $llvmBin) { 
+            $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append 
+            # On l'ajoute aussi à la session actuelle pour clang-format
+            $env:PATH = "$llvmBin;$env:PATH"
+          }
           # Try to locate cppcheck.exe anywhere common
           $candidates = @(
             "C:\Program Files\Cppcheck\cppcheck.exe",
@@ -182,12 +185,7 @@ jobs:
               | Select-Object -First 1 -ExpandProperty FullName
           }
 
-          if (-not $found) {
-            Write-Host "cppcheck.exe not found. Debug info:"
-            where.exe cppcheck 2>$null || Write-Host "where cppcheck: not found"
-            choco list --local-only | findstr /I cppcheck
-            throw "cppcheck installation appears to have failed or path not found."
-          }
+          if (-not $found) { throw "cppcheck.exe non trouvé après installation." }
 
           $cppDir = Split-Path -Parent $found
           $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
