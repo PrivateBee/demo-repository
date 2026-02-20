@@ -150,7 +150,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference="Stop"
-          $files = Get-ChildItem -Recurse -File -Include *.c
+          $files = Get-ChildItem -Recurse -File -Include *.c -ErrorAction SilentlyContinue
           if ($files.Count -gt 0) { "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
           else { "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
@@ -161,38 +161,60 @@ jobs:
           $ErrorActionPreference="Stop"
 
           # 1. Force l'installation de cppcheck
-          choco install -y llvm cppcheck --no-progress
+          choco install -y llvm cppcheck 
 
           # 2. Ajout immédiat de LLVM au PATH de la session et de l'Action
           $llvmBin = "C:\Program Files\LLVM\bin"
           if (Test-Path $llvmBin) {
             $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
             $env:PATH = "$llvmBin;$env:PATH"
+          } else {
+            throw "LLVM bin not found at: $llvmBin"
           }
+           # Trouver cppcheck.exe (robuste)
+            $candidates = @(
+              "C:\Program Files\Cppcheck\cppcheck.exe",
+              "C:\Program Files (x86)\Cppcheck\cppcheck.exe",
+              "C:\ProgramData\chocolatey\bin\cppcheck.exe")
 
           # 3. Localisation dynamique et création d'un alias
           # On cherche dans les dossiers standards de Chocolatey et Program Files
-          $cppExe = Get-ChildItem -Path "C:\Program Files\Cppcheck", "C:\ProgramData\chocolatey\bin" -Filter "cppcheck.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          $cppExe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-          if ($null -eq $cppExe) {
-              # Si tjs pas trouvé, on tente un "where"
-              $cppExe = where.exe cppcheck.exe | Select-Object -First 1
+          if (-not $cppExe) {
+          # fallback: recherche dans quelques roots
+          $cppExe = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)","C:\ProgramData\chocolatey" `
+            -Recurse -File -Filter "cppcheck.exe" -ErrorAction SilentlyContinue `
+            | Select-Object -First 1 -ExpandProperty FullName
+            }
+
+          if (-not $cppExe) {
+            # fallback: where.exe
+            try { $cppExe = (where.exe cppcheck.exe | Select-Object -First 1) } catch { $cppExe = $null }
           }
 
-          if ($null -ne $cppExe) {
-              Write-Host "Cppcheck trouvé ici : $cppExe"
-              $cppDir = Split-Path -Parent $cppExe
-              $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              
-              # LA SOLUTION : Créer un alias pour la session actuelle
-              New-Alias -Name cppcheck -Value $cppExe -Scope Global
-          } else {
-              throw "Impossible de localiser cppcheck.exe après l'installation."
+           if (-not $cppExe) {
+            Write-Host "cppcheck.exe not found. Debug:"
+            choco list --local-only | findstr /I cppcheck
+            where.exe cppcheck.exe 2>$null || Write-Host "where cppcheck.exe: not found"
+            throw "Impossible de localiser cppcheck.exe après installation."
           }
+
+           Write-Host "Cppcheck trouvé ici : $cppExe"
+          $cppDir = Split-Path -Parent $cppExe
+
+          # cppcheck -> PATH (step courant + steps suivants)
+          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$cppDir;$env:PATH"
 
           # 4. Vérification
           clang-format --version
           cppcheck --version # Devrait maintenant fonctionner via l'alias
+          
+          # Optionnel: check que la commande est bien résolue
+          Get-Command clang-format -ErrorAction Stop | Format-List *
+          Get-Command cppcheck     -ErrorAction SilentlyContinue | Format-List *  # peut être null si alias non nécessaire
+          
       - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
