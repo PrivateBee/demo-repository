@@ -163,14 +163,15 @@ jobs:
           # 1. Force l'installation de cppcheck
           choco install -y llvm cppcheck 
 
-          # 2. Ajout immédiat de LLVM au PATH de la session et de l'Action
+           # LLVM bin
           $llvmBin = "C:\Program Files\LLVM\bin"
-          if (Test-Path $llvmBin) {
-            $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            $env:PATH = "$llvmBin;$env:PATH"
-          } else {
-            throw "LLVM bin not found at: $llvmBin"
-          }
+          if (-not (Test-Path $llvmBin)) { throw "LLVM bin not found at: $llvmBin" }
+
+          # PATH step courant + steps suivants
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$llvmBin;$env:PATH"
+         
+          
            # Trouver cppcheck.exe (robuste)
             $candidates = @(
               "C:\Program Files\Cppcheck\cppcheck.exe",
@@ -200,21 +201,17 @@ jobs:
             throw "Impossible de localiser cppcheck.exe après installation."
           }
 
-           Write-Host "Cppcheck trouvé ici : $cppExe"
-          $cppDir = Split-Path -Parent $cppExe
+          Write-Host "Cppcheck trouvé ici : $cppExe"
+          "cppcheck_path=$cppExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-          # cppcheck -> PATH (step courant + steps suivants)
-          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $env:PATH = "$cppDir;$env:PATH"
+
+         
 
           # 4. Vérification
           clang-format --version
           cppcheck --version # Devrait maintenant fonctionner via l'alias
           
-          # Optionnel: check que la commande est bien résolue
-          Get-Command clang-format -ErrorAction Stop | Format-List *
-          Get-Command cppcheck     -ErrorAction SilentlyContinue | Format-List *  # peut être null si alias non nécessaire
-          
+         
       - name: clang-format (LLVM) check [C] (Windows)
         if: steps.ccheck.outputs.has_c == 'true'
         shell: pwsh
