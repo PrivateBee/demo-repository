@@ -7,6 +7,10 @@ int main(void) {
     return 1;
   }
 
+
+
+
+  
   tab[0] = 42;
   printf("%d\n", tab[0]);
 
