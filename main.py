@@ -1,1 +1,4 @@
-print("alipo")
+def hello():
+    print("salut")
+
+hello()
