@@ -2,9 +2,7 @@ name: "CI Quality (C/C++/Python/Java) - run ONLY matching OS (unix vs windows)"
 
 on:
   pull_request:
-    branches: ["main"]
   push:
-    branches: ["main"]
   workflow_dispatch:
 
 permissions:
