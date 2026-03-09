@@ -8,9 +8,6 @@ int main(void) {
   }
 
 
-
-
-  
   printf(a);
 
   tab[0] = 42;
