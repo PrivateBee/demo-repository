@@ -1,5 +1,4 @@
-def hello():
-    print("salut")
+import sys,os
 
-
-hello()
+def hello( ):
+    print( "salut" )
