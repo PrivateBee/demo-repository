@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   detect-target:
-    name: "Detect target OS"
+    name: Detect target OS
     runs-on: ubuntu-24.04
     outputs:
       target: ${{ steps.pick.outputs.target }}
@@ -70,9 +70,6 @@ jobs:
           echo "Target = ${{ steps.pick.outputs.target }}"
           echo "Matrix = ${{ steps.pick.outputs.matrix }}"
 
-  # ==========================================================
-  # C
-  # ==========================================================
   quality-c:
     name: "C Quality on ${{ matrix.label }}"
     needs: [detect-target]
@@ -112,7 +109,7 @@ jobs:
           }
 
       - name: Install C tools (Linux)
-        if: (steps.ccheck_unix.outputs.has_c == 'true' || steps.ccheck_windows.outputs.has_c == 'true') && runner.os == 'Linux'
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -120,7 +117,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang clang-format cppcheck
 
       - name: Install C tools (macOS)
-        if: (steps.ccheck_unix.outputs.has_c == 'true' || steps.ccheck_windows.outputs.has_c == 'true') && runner.os == 'macOS'
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -134,7 +131,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          choco install -y llvm cppcheck.portable
+          choco upgrade -y llvm cppcheck
 
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
           refreshenv
@@ -143,15 +140,30 @@ jobs:
           if (-not (Test-Path $llvmBin)) {
             throw "LLVM bin not found: $llvmBin"
           }
-
           $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-          $cpp = Get-Command cppcheck -ErrorAction Stop
-          $cppDir = Split-Path $cpp.Source -Parent
+          $cppCandidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe"
+          )
+
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $cppExe) {
+            try {
+              $cmd = Get-Command cppcheck -ErrorAction Stop
+              $cppExe = $cmd.Source
+            } catch {
+              throw "cppcheck.exe not found after Chocolatey install/upgrade"
+            }
+          }
+
+          $cppDir = Split-Path $cppExe -Parent
           $cppDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+          Write-Host "cppcheck.exe = $cppExe"
           clang-format --version
-          cppcheck --version
+          & $cppExe --version
 
       - name: clang-format check [C] (Unix)
         if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
@@ -187,7 +199,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
+
+          $cppCandidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe"
+          )
+
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cppExe) {
+            $cppExe = (Get-Command cppcheck -ErrorAction Stop).Source
+          }
+
+          & $cppExe --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
 
       - name: Compile all C units (Unix)
         if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
@@ -216,9 +239,6 @@ jobs:
         if: steps.ccheck_unix.outputs.has_c != 'true' && steps.ccheck_windows.outputs.has_c != 'true'
         run: echo "No C files -> skipping"
 
-  # ==========================================================
-  # C++
-  # ==========================================================
   quality-cpp:
     name: "C++ Quality on ${{ matrix.label }}"
     needs: [detect-target]
@@ -258,7 +278,7 @@ jobs:
           }
 
       - name: Install C++ tools (Linux)
-        if: (steps.cppcheck_unix.outputs.has_cpp == 'true' || steps.cppcheck_windows.outputs.has_cpp == 'true') && runner.os == 'Linux'
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -266,7 +286,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang clang-format cppcheck
 
       - name: Install C++ tools (macOS)
-        if: (steps.cppcheck_unix.outputs.has_cpp == 'true' || steps.cppcheck_windows.outputs.has_cpp == 'true') && runner.os == 'macOS'
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -280,7 +300,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          choco install -y llvm cppcheck.portable
+          choco upgrade -y llvm cppcheck
 
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
           refreshenv
@@ -289,15 +309,30 @@ jobs:
           if (-not (Test-Path $llvmBin)) {
             throw "LLVM bin not found: $llvmBin"
           }
-
           $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-          $cpp = Get-Command cppcheck -ErrorAction Stop
-          $cppDir = Split-Path $cpp.Source -Parent
+          $cppCandidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe"
+          )
+
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $cppExe) {
+            try {
+              $cmd = Get-Command cppcheck -ErrorAction Stop
+              $cppExe = $cmd.Source
+            } catch {
+              throw "cppcheck.exe not found after Chocolatey install/upgrade"
+            }
+          }
+
+          $cppDir = Split-Path $cppExe -Parent
           $cppDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
+          Write-Host "cppcheck.exe = $cppExe"
           clang-format --version
-          cppcheck --version
+          & $cppExe --version
 
       - name: clang-format check [C++] (Unix)
         if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os != 'Windows'
@@ -333,7 +368,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
+
+          $cppCandidates = @(
+            "C:\Program Files\Cppcheck\cppcheck.exe",
+            "C:\Program Files (x86)\Cppcheck\cppcheck.exe"
+          )
+
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cppExe) {
+            $cppExe = (Get-Command cppcheck -ErrorAction Stop).Source
+          }
+
+          & $cppExe --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem .
 
       - name: Compile all C++ units (Unix)
         if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os != 'Windows'
@@ -362,9 +408,6 @@ jobs:
         if: steps.cppcheck_unix.outputs.has_cpp != 'true' && steps.cppcheck_windows.outputs.has_cpp != 'true'
         run: echo "No C++ files -> skipping"
 
-  # ==========================================================
-  # PYTHON
-  # ==========================================================
   quality-python:
     name: "Python Quality on ${{ matrix.label }}"
     needs: [detect-target]
@@ -460,7 +503,8 @@ jobs:
         if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          python -m mypy .; if ($LASTEXITCODE -ne 0) { exit 0 }
+          python -m mypy .
+          if ($LASTEXITCODE -ne 0) { exit 0 }
 
       - name: Compileall (Unix)
         if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
@@ -501,9 +545,6 @@ jobs:
         if: steps.pycheck_unix.outputs.has_py != 'true' && steps.pycheck_windows.outputs.has_py != 'true'
         run: echo "No Python files -> skipping"
 
-  # ==========================================================
-  # JAVA
-  # ==========================================================
   quality-java:
     name: "Java Quality on ${{ matrix.label }}"
     needs: [detect-target]
