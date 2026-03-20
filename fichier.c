@@ -11,7 +11,7 @@ int main(void) {
   printf(a);
 
   tab[0] = 42;
-  printf("%d\n", tab[0]);
+  printf("tab=%d\n", tab[0]);
 
   /* fuite mémoire: on oublie free(tab); */
   return 0;
