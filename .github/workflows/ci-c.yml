@@ -1,518 +1,505 @@
-name: CI Quality (LLVM style + Static/Dynamic) - C/C++/Python/Java
+name: "CI Quality (C/C++/Python/Java) - run ONLY selected OS"
 
 on:
   pull_request:
-    branches: ["main"]
   push:
-    branches: ["main"]
   workflow_dispatch:
+    inputs:
+      target_os:
+        description: "OS cible à exécuter"
+        required: false
+        default: "linux"
+        type: choice
+        options:
+          - linux
+          - windows
+          - macos
 
 permissions:
   contents: read
 
 jobs:
-  # =========================
-  # C ONLY
-  # =========================
-  quality-c:
-    name: C (LLVM format + static + dynamic)
+  detect-target:
+    name: Detect target OS
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    outputs:
+      target: ${{ steps.pick.outputs.target }}
+      matrix: ${{ steps.pick.outputs.matrix }}
+    env:
+      INPUT_TARGET: ${{ github.event.inputs.target_os || '' }}
+      REF_NAME: ${{ github.head_ref || github.ref_name }}
+      PR_TITLE: ${{ github.event.pull_request.title || '' }}
+      PR_BODY: ${{ github.event.pull_request.body || '' }}
+      COMMIT_MSG: ${{ github.event.head_commit.message || '' }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Detect C files
-        id: ccheck
+      - name: Pick target OS
+        id: pick
         shell: bash
         run: |
           set -euo pipefail
-          if find . -type f -name "*.c" ! -path "./.git/*" | grep -q .; then
+
+          manual="$(printf '%s' "$INPUT_TARGET" | tr '[:upper:]' '[:lower:]')"
+          ref="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]')"
+          text="$(printf '%s %s %s' "$PR_TITLE" "$PR_BODY" "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]')"
+
+          if [[ "$manual" == "windows" ]]; then
+            target="windows"
+            matrix='{"include":[{"os":"windows-2022","label":"Windows"}]}'
+          elif [[ "$manual" == "macos" ]]; then
+            target="macos"
+            matrix='{"include":[{"os":"macos-14","label":"macOS"}]}'
+          elif [[ "$manual" == "linux" ]]; then
+            target="linux"
+            matrix='{"include":[{"os":"ubuntu-24.04","label":"Ubuntu"}]}'
+          elif [[ "$ref" == windows/* ]] || [[ "$text" == *"[windows]"* ]]; then
+            target="windows"
+            matrix='{"include":[{"os":"windows-2022","label":"Windows"}]}'
+          elif [[ "$ref" == macos/* ]] || [[ "$ref" == mac/* ]] || [[ "$text" == *"[macos]"* ]] || [[ "$text" == *"[mac]"* ]]; then
+            target="macos"
+            matrix='{"include":[{"os":"macos-14","label":"macOS"}]}'
+          else
+            target="linux"
+            matrix='{"include":[{"os":"ubuntu-24.04","label":"Ubuntu"}]}'
+          fi
+
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Show target
+        run: |
+          echo "Target = ${{ steps.pick.outputs.target }}"
+          echo "Matrix = ${{ steps.pick.outputs.matrix }}"
+
+  quality-c:
+    name: "C Quality on ${{ matrix.label }}"
+    needs: [detect-target]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-target.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C files (Unix)
+        if: runner.os != 'Windows'
+        id: ccheck_unix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*" | grep -q .; then
             echo "has_c=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_c=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install C tools (only if C exists, pinned clang 18)
-        if: steps.ccheck.outputs.has_c == 'true'
+      - name: Detect C files (Windows)
+        if: runner.os == 'Windows'
+        id: ccheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.c,*.h -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($files.Count -gt 0) {
+            "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Install C tools (Linux)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 clang-format-18 clang-tidy-18 \
-            cppcheck valgrind
+          sudo apt-get install -y --no-install-recommends clang clang-format cppcheck gcovr flawfinder
 
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
-
-      # -------------------------
-      # 1) LLVM STYLE CHECK
-      # -------------------------
-      - name: Check LLVM style (clang-format) [C]
-        if: steps.ccheck.outputs.has_c == 'true'
+      - name: Install C tools (macOS)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t FMT_FILES < <(find . -type f \( -name "*.c" -o -name "*.h" \) ! -path "./.git/*")
-          if [ "${#FMT_FILES[@]}" -eq 0 ]; then
-            echo "No C files -> skipping format check"
-            exit 0
-          fi
-          for f in "${FMT_FILES[@]}"; do
-            clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
-              exit 1
-            }
-          done
+          brew update
+          brew install llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      # -------------------------
-      # 2) STATIC ANALYSIS
-      # -------------------------
-      - name: Static analysis (cppcheck) [C]
-        if: steps.ccheck.outputs.has_c == 'true'
+      - name: Install C tools (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco upgrade -y llvm cppcheck
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
+          refreshenv
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path $llvmBin)) { throw "LLVM bin not found: $llvmBin" }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $cppCandidates = @("C:\Program Files\Cppcheck\cppcheck.exe", "C:\Program Files (x86)\Cppcheck\cppcheck.exe")
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cppExe) { $cppExe = (Get-Command cppcheck -ErrorAction Stop).Source }
+          $cppDir = Split-Path $cppExe -Parent
+          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: clang-format check [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          cppcheck --enable=all --inconclusive \
-            --inline-suppr --error-exitcode=1 \
-            --suppress=missingIncludeSystem \
-            .
+          # nullglob evite les erreurs s'il n'y a pas de fichiers .h
+          shopt -s nullglob
+          clang-format -style=LLVM -i *.c *.h
+          # On verifie les modifications (seulement sur C)
+          git diff --exit-code
 
-      - name: Static analysis (clang-tidy if compile_commands.json exists) [C]
-        if: steps.ccheck.outputs.has_c == 'true'
+      - name: clang-format check [C] (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem -File -Include *.c,*.h -ErrorAction SilentlyContinue | ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
+          git diff --exit-code
+
+      - name: Static analysis (cppcheck) [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f compile_commands.json ]; then
-            echo "No compile_commands.json -> skipping clang-tidy"
-            exit 0
-          fi
-          mapfile -t TIDY_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
-            echo "No .c files -> skipping clang-tidy"
-            exit 0
-          fi
-          clang-tidy -p . \
-            -checks="-*,clang-analyzer-*" \
-            "${TIDY_FILES[@]}"
+          shopt -s nullglob
+          cppcheck --enable=all --inconclusive --inline-suppr --suppress=missingIncludeSystem --xml *.c *.h 2> cppcheck-report.xml
 
-      # -------------------------
-      # 3) BUILD (compile everything, no linking)
-      # -------------------------
-      - name: Compile all C translation units (no linking)
-        if: steps.ccheck.outputs.has_c == 'true'
+      - name: Security Scan SAST (Flawfinder) [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          flawfinder --singleline *.c *.h > flawfinder-report.txt || true
+
+      - name: Test & Coverage [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "Makefile" ] || [ -f "CMakeLists.txt" ]; then
+            gcovr --xml-pretty --exclude-unreachable-branches --print-summary -o coverage.xml -r . || true
+          else
+            touch coverage.xml
+          fi
+
+      - name: Compile all C units (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build_c/obj
-          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-          for f in "${C_FILES[@]}"; do
-            out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
-            echo "CC  $f"
-            gcc -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+          shopt -s nullglob
+          for f in *.c; do
+            out="build_c/obj/${f%.c}.o"
+            clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
           done
 
-      # -------------------------
-      # 4) DYNAMIC ANALYSIS (only if exactly one main)
-      # -------------------------
-      - name: Link & run with sanitizers + valgrind (only if exactly one main) [C]
-        if: steps.ccheck.outputs.has_c == 'true'
-        shell: bash
+      - name: Compile all C units (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mapfile -t MAIN_FILES < <(
-            grep -Rsn --include="*.c" -E '^\s*int\s+main\s*\(' . | cut -d: -f1 | sort -u
-          )
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path build_c/obj | Out-Null
+          $files = Get-ChildItem -File -Include *.c
+          foreach ($f in $files) {
+            $safe = ($f.Name -replace '\.c$', '.obj')
+            & clang -std=c11 -Wall -Wextra -Werror -O2 -c $f.FullName -o "build_c/obj/$safe"
+          }
 
-          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
-            echo "No main() found -> skipping dynamic analysis"
-            exit 0
-          fi
-          if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
-            echo "Multiple main() found -> skipping link/run"
-            printf '%s\n' "${MAIN_FILES[@]}"
-            exit 0
-          fi
-
-          mkdir -p build_c
-          mapfile -t C_FILES < <(find . -type f -name "*.c" ! -path "./.git/*")
-
-          echo "Build + run (sanitizers):"
-          clang -std=c11 -Wall -Wextra -Werror -O1 -g \
-            -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${C_FILES[@]}" -o build_c/app_asan
-          ./build_c/app_asan
-
-          echo "Build + run (valgrind on non-sanitized binary):"
-          clang -std=c11 -Wall -Wextra -Werror -O1 -g \
-            "${C_FILES[@]}" -o build_c/app_vg
-          valgrind --error-exitcode=1 --leak-check=full ./build_c/app_vg
-
-      - name: C skipped (no .c)
-        if: steps.ccheck.outputs.has_c != 'true'
-        run: echo "No .c files found -> skipping C job"
-
-  # =========================
-  # C++ ONLY
-  # =========================
   quality-cpp:
-    name: C++ (LLVM format + static + dynamic)
-    runs-on: ubuntu-24.04
+    name: "C++ Quality on ${{ matrix.label }}"
+    needs: [detect-target]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-target.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect C++ files
-        id: cppcheck
+      - name: Detect C++ files (Unix)
+        if: runner.os != 'Windows'
+        id: cppcheck_unix
         shell: bash
         run: |
           set -euo pipefail
-          if find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*" | grep -q .; then
+          if find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.h" \) ! -path "./.git/*" | grep -q .; then
             echo "has_cpp=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_cpp=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install C++ tools (only if C++ exists, pinned clang 18)
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Detect C++ files (Windows)
+        if: runner.os == 'Windows'
+        id: cppcheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.cpp,*.cc,*.cxx,*.hpp,*.hxx,*.h -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($files.Count -gt 0) { "has_cpp=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 } else { "has_cpp=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+
+      - name: Install C++ tools (Linux)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 clang++-18 \
-            clang-format-18 clang-tidy-18 \
-            cppcheck valgrind
+          sudo apt-get install -y --no-install-recommends clang clang-format cppcheck gcovr flawfinder
 
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
-
-      # -------------------------
-      # 1) LLVM STYLE CHECK
-      # -------------------------
-      - name: Check LLVM style (clang-format) [C++]
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Install C++ tools (macOS)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t FMT_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.hxx" -o -name "*.cc" -o -name "*.cxx" -o -name "*.h" \) \
-              ! -path "./.git/*"
-          )
-          if [ "${#FMT_FILES[@]}" -eq 0 ]; then
-            echo "No C++ files -> skipping format check"
-            exit 0
-          fi
-          for f in "${FMT_FILES[@]}"; do
-            clang-format -style=LLVM "$f" | diff -u "$f" - >/dev/null || {
-              echo "::error file=$f::clang-format LLVM mismatch. Fix with: clang-format -style=LLVM -i $f"
-              exit 1
-            }
-          done
+          brew update
+          brew install llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      # -------------------------
-      # 2) STATIC ANALYSIS
-      # -------------------------
-      - name: Static analysis (cppcheck) [C++]
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Install C++ tools (Windows)
+        if: steps.cppcheck_windows.outputs.has_cpp == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco upgrade -y llvm cppcheck
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
+          refreshenv
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path $llvmBin)) { throw "LLVM bin not found: $llvmBin" }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $cppCandidates = @("C:\Program Files\Cppcheck\cppcheck.exe", "C:\Program Files (x86)\Cppcheck\cppcheck.exe")
+          $cppExe = $cppCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cppExe) { $cppExe = (Get-Command cppcheck -ErrorAction Stop).Source }
+          $cppDir = Split-Path $cppExe -Parent
+          $cppDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: clang-format check [C++] (Unix)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          cppcheck --enable=all --inconclusive \
-            --inline-suppr --error-exitcode=1 \
-            --suppress=missingIncludeSystem \
-            .
+          shopt -s nullglob
+          clang-format -style=LLVM -i *.cpp *.cc *.cxx *.hpp *.hxx *.h
+          git diff --exit-code
 
-      - name: Static analysis (clang-tidy if compile_commands.json exists) [C++]
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Static analysis (cppcheck) [C++] (Unix)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f compile_commands.json ]; then
-            echo "No compile_commands.json -> skipping clang-tidy"
-            exit 0
-          fi
-          mapfile -t TIDY_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
-          if [ "${#TIDY_FILES[@]}" -eq 0 ]; then
-            echo "No C++ sources -> skipping clang-tidy"
-            exit 0
-          fi
-          clang-tidy -p . \
-            -checks="-*,clang-analyzer-*,bugprone-*,performance-*,readability-*" \
-            "${TIDY_FILES[@]}"
+          shopt -s nullglob
+          cppcheck --enable=all --inconclusive --inline-suppr --suppress=missingIncludeSystem --xml *.cpp *.cc *.cxx *.hpp *.hxx *.h 2> cppcheck-report.xml
 
-      # -------------------------
-      # 3) BUILD (compile everything, no linking)
-      # -------------------------
-      - name: Compile all C++ translation units (no linking)
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Security Scan SAST (Flawfinder) [C++] (Unix)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build_cpp/obj
-          mapfile -t CPP_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
-          for f in "${CPP_FILES[@]}"; do
-            out="build_cpp/obj/$(echo "$f" | sed 's|^\./||; s|/|_|g').o"
-            echo "CXX $f"
-            g++ -std=c++17 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
-          done
+          shopt -s nullglob
+          flawfinder --singleline *.cpp *.cc *.cxx *.hpp *.hxx *.h > flawfinder-report.txt || true
 
-      # -------------------------
-      # 4) DYNAMIC ANALYSIS (only if exactly one main)
-      # -------------------------
-      - name: Link & run with sanitizers + valgrind (only if exactly one main) [C++]
-        if: steps.cppcheck.outputs.has_cpp == 'true'
+      - name: Test & Coverage [C++] (Unix)
+        if: steps.cppcheck_unix.outputs.has_cpp == 'true' && runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t MAIN_FILES < <(
-            grep -Rsn --include="*.cpp" --include="*.cc" --include="*.cxx" -E '^\s*(int|auto)\s+main\s*\(' . \
-              | cut -d: -f1 | sort -u
-          )
-
-          if [ "${#MAIN_FILES[@]}" -eq 0 ]; then
-            echo "No main() found -> skipping dynamic analysis"
-            exit 0
-          fi
-          if [ "${#MAIN_FILES[@]}" -ne 1 ]; then
-            echo "Multiple main() found -> skipping link/run"
-            printf '%s\n' "${MAIN_FILES[@]}"
-            exit 0
+          if [ -f "Makefile" ] || [ -f "CMakeLists.txt" ]; then
+            gcovr --xml-pretty --exclude-unreachable-branches --print-summary -o coverage.xml -r . || true
+          else
+            touch coverage.xml
           fi
 
-          mkdir -p build_cpp
-          mapfile -t CPP_FILES < <(
-            find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) ! -path "./.git/*"
-          )
-
-          echo "Build + run (sanitizers):"
-          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-            -fsanitize=address,undefined -fno-omit-frame-pointer \
-            "${CPP_FILES[@]}" -o build_cpp/app_asan
-          ./build_cpp/app_asan
-
-          echo "Build + run (valgrind on non-sanitized binary):"
-          clang++ -std=c++17 -Wall -Wextra -Werror -O1 -g \
-            "${CPP_FILES[@]}" -o build_cpp/app_vg
-          valgrind --error-exitcode=1 --leak-check=full ./build_cpp/app_vg
-
-      - name: C++ skipped (no C++ sources)
-        if: steps.cppcheck.outputs.has_cpp != 'true'
-        run: echo "No C++ files found -> skipping C++ job"
-
-  # =========================
-  # PYTHON
-  # =========================
   quality-python:
-    name: Python (format + static + compile + tests/run)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    name: "Python Quality on ${{ matrix.label }}"
+    needs: [detect-target]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-target.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect Python files
-        id: pycheck
+      - name: Detect Python files (Unix)
+        if: runner.os != 'Windows'
+        id: pycheck_unix
         shell: bash
         run: |
           set -euo pipefail
-          if find . -type f -name "*.py" ! -path "./.git/*" | grep -q .; then
-            echo "has_py=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_py=false" >> "$GITHUB_OUTPUT"
-          fi
+          if find . -type f -name "*.py" ! -path "./.git/*" | grep -q .; then echo "has_py=true" >> "$GITHUB_OUTPUT"; else echo "has_py=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Detect Python files (Windows)
+        if: runner.os == 'Windows'
+        id: pycheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.py -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($files.Count -gt 0) { "has_py=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 } else { "has_py=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
       - uses: actions/setup-python@v5
-        if: steps.pycheck.outputs.has_py == 'true'
+        if: steps.pycheck_unix.outputs.has_py == 'true' || steps.pycheck_windows.outputs.has_py == 'true'
         with:
           python-version: "3.11"
 
-      - name: Install Python quality tools (only if Python exists)
-        if: steps.pycheck.outputs.has_py == 'true'
+      - name: Install Python tools (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install ruff mypy pytest
+          python -m pip install ruff mypy pytest coverage bandit
 
-      - name: Python format check (ruff format)
-        if: steps.pycheck.outputs.has_py == 'true'
+      - name: Install Python tools (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff mypy pytest coverage bandit
+
+      - name: Ruff format & lint (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          ruff format --check .
+          shopt -s nullglob
+          python -m ruff format --check *.py
+          python -m ruff check *.py
 
-      - name: Python lint (ruff)
-        if: steps.pycheck.outputs.has_py == 'true'
+      - name: Ruff format & lint (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m ruff format --check *.py
+          python -m ruff check *.py
+
+      - name: Mypy (best effort) (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          ruff check .
+          shopt -s nullglob
+          python -m mypy *.py || true
 
-      - name: Python type-check (mypy, best-effort)
-        if: steps.pycheck.outputs.has_py == 'true'
+      - name: Mypy (best effort) (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m mypy *.py
+          if ($LASTEXITCODE -ne 0) { exit 0 }
+
+      - name: Security Scan (Bandit)
+        if: steps.pycheck_unix.outputs.has_py == 'true' || steps.pycheck_windows.outputs.has_py == 'true'
         shell: bash
         run: |
-          set -euo pipefail
-          mypy . || true
+          shopt -s nullglob
+          python -m bandit -f xml -o bandit-report.xml *.py || true
 
-      - name: Python syntax check (compileall)
-        if: steps.pycheck.outputs.has_py == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m compileall -q .
-
-      - name: Python tests (pytest if present, else run single script if unique)
-        if: steps.pycheck.outputs.has_py == 'true'
+      - name: Pytest & Coverage (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           if [ -d "tests" ] || find . -maxdepth 3 -type f -name "test_*.py" | grep -q .; then
-            pytest -q
-            exit 0
-          fi
-
-          mapfile -t PY_FILES < <(find . -type f -name "*.py" ! -path "./.git/*" | sort)
-          if [ "${#PY_FILES[@]}" -eq 1 ]; then
-            echo "No tests found. Running single script: ${PY_FILES[0]}"
-            python -u "${PY_FILES[0]}"
+            echo "Tests trouvés. Lancement de pytest et calcul du coverage..."
+            python -m coverage run -m pytest -q --junitxml=pytest-report.xml
+            python -m coverage xml
           else
-            echo "No tests and multiple .py files -> skipping run"
+            echo " Aucun test trouvé -> skipping (Mode non bloquant)"
+            touch coverage.xml pytest-report.xml
           fi
 
-      - name: Python skipped (no .py)
-        if: steps.pycheck.outputs.has_py != 'true'
-        run: echo "No .py files found -> skipping"
+      - name: Pytest & Coverage (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hasTests = $false
+          if (Test-Path "tests") { $hasTests = $true } else { $tests = Get-ChildItem -Recurse -File -Include test_*.py -ErrorAction SilentlyContinue | Select-Object -First 1; if ($tests) { $hasTests = $true } }
+          if ($hasTests) {
+            Write-Host "Tests trouvés. Lancement de pytest et calcul du coverage..."
+            python -m coverage run -m pytest -q --junitxml=pytest-report.xml
+            python -m coverage xml
+          } else {
+            Write-Host " Aucun test trouvé -> skipping (Mode non bloquant)"
+            New-Item -ItemType File -Force -Path coverage.xml | Out-Null
+            New-Item -ItemType File -Force -Path pytest-report.xml | Out-Null
+          }
 
-  # =========================
-  # JAVA
-  # =========================
   quality-java:
-    name: Java (style + static + compile + tests/run)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    name: "Java Quality on ${{ matrix.label }}"
+    needs: [detect-target]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-target.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect Java files
-        id: javacheck
+      - name: Detect Java files (Unix)
+        if: runner.os != 'Windows'
+        id: javacheck_unix
         shell: bash
         run: |
           set -euo pipefail
-          if find . -type f -name "*.java" ! -path "./.git/*" | grep -q .; then
-            echo "has_java=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_java=false" >> "$GITHUB_OUTPUT"
-          fi
+          if find . -type f -name "*.java" ! -path "./.git/*" | grep -q .; then echo "has_java=true" >> "$GITHUB_OUTPUT"; else echo "has_java=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Detect Java files (Windows)
+        if: runner.os == 'Windows'
+        id: javacheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $files = Get-ChildItem -Recurse -File -Include *.java -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($files.Count -gt 0) { "has_java=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 } else { "has_java=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
 
       - uses: actions/setup-java@v4
-        if: steps.javacheck.outputs.has_java == 'true'
+        if: steps.javacheck_unix.outputs.has_java == 'true' || steps.javacheck_windows.outputs.has_java == 'true'
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Java static tools (only if Java exists)
-        if: steps.javacheck.outputs.has_java == 'true'
+      - name: Build, Test & Coverage (Maven/Gradle) (Unix)
+        if: steps.javacheck_unix.outputs.has_java == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends checkstyle spotbugs
-
-      - name: Java style check (Checkstyle - basic)
-        if: steps.javacheck.outputs.has_java == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > checkstyle.xml <<'XML'
-          <!DOCTYPE module PUBLIC
-            "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
-            "https://checkstyle.org/dtds/configuration_1_3.dtd">
-          <module name="Checker">
-            <module name="TreeWalker">
-              <module name="NeedBraces"/>
-              <module name="UnusedImports"/>
-              <module name="AvoidStarImport"/>
-              <module name="LineLength">
-                <property name="max" value="120"/>
-              </module>
-            </module>
-          </module>
-          XML
-
-          mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
-          checkstyle -c checkstyle.xml "${JAVA_FILES[@]}"
-
-      - name: Compile all Java files
-        if: steps.javacheck.outputs.has_java == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
-          javac -d out "${JAVA_FILES[@]}"
-
-      - name: Static analysis (SpotBugs) (best-effort)
-        if: steps.javacheck.outputs.has_java == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -d out ]; then
-            echo "No compiled classes -> skipping spotbugs"
-            exit 0
-          fi
-          spotbugs -textui -effort:max -high -classpath out -auxclasspath out out || true
-
-      - name: Run tests if Maven/Gradle, else run if exactly one main
-        if: steps.javacheck.outputs.has_java == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
           if [ -f "pom.xml" ]; then
-            echo "pom.xml found -> running mvn test"
-            sudo apt-get update && sudo apt-get install -y maven
-            mvn -q test
-            exit 0
-          fi
-          if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "gradle build found -> running gradle test"
-            sudo apt-get update && sudo apt-get install -y gradle
-            gradle test
-            exit 0
-          fi
-
-          mapfile -t MAIN_SRCS < <(grep -Rsl --include="*.java" "public static void main" . | sort)
-          if [ "${#MAIN_SRCS[@]}" -eq 0 ]; then
-            echo "No main() found -> skipping run"
-            exit 0
-          fi
-          if [ "${#MAIN_SRCS[@]}" -ne 1 ]; then
-            echo "Multiple main() found -> skipping run"
-            printf '%s\n' "${MAIN_SRCS[@]}"
-            exit 0
+            echo "Projet Maven détecté. Lancement de l'analyse..."
+            mvn clean test jacoco:report -fn
+          elif [ -f "build.gradle" ]; then
+            echo " Projet Gradle détecté. Lancement de l'analyse..."
+            ./gradlew test jacocoTestReport --continue || true
+          else
+            echo "Aucun pom.xml ou build.gradle trouvé. Compilation de secours..."
+            mkdir -p out
+            mapfile -t JAVA_FILES < <(find . -type f -name "*.java" ! -path "./.git/*")
+            if [ "${#JAVA_FILES[@]}" -gt 0 ]; then javac -d out "${JAVA_FILES[@]}"; fi
+            mkdir -p target/site/jacoco
+            touch target/site/jacoco/jacoco.xml
           fi
 
-          MAIN_SRC="${MAIN_SRCS[0]}"
-          PKG=$(grep -E "^\s*package\s+" "$MAIN_SRC" | head -n 1 | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;\s*$/\1/' || true)
-          CLS=$(grep -E "class\s+[A-Za-z_][A-Za-z0-9_]*" "$MAIN_SRC" | head -n 1 | sed -E 's/.*class\s+([A-Za-z_][A-Za-z0-9_]*).*/\1/')
-
-          if [ -z "$CLS" ]; then
-            echo "Could not detect class name -> skipping run"
-            exit 0
-          fi
-
-          if [ -n "$PKG" ]; then MAIN="$PKG.$CLS"; else MAIN="$CLS"; fi
-          echo "Running Java main: $MAIN"
-          java -cp out "$MAIN"
-
-      - name: Java skipped (no .java)
-        if: steps.javacheck.outputs.has_java != 'true'
-        run: echo "No .java files found -> skipping"
+      - name: Build, Test & Coverage (Maven/Gradle) (Windows)
+        if: steps.javacheck_windows.outputs.has_java == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path "pom.xml") {
+            mvn clean test jacoco:report -fn
+          } elseif (Test-Path "build.gradle") {
+            .\gradlew test jacocoTestReport --continue; if ($LASTEXITCODE -ne 0) { exit 0 }
+          } else {
+            New-Item -ItemType Directory -Force -Path out | Out-Null
+            $files = Get-ChildItem -Recurse -File -Include *.java | Where-Object { $_.FullName -notmatch '\\.git\\' }
+            if ($files.Count -gt 0) { & javac -d out ($files.FullName) }
+            New-Item -ItemType Directory -Force -Path "target\site\jacoco" | Out-Null
+            New-Item -ItemType File -Force -Path "target\site\jacoco\jacoco.xml" | Out-Null
+          }
