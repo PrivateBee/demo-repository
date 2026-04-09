@@ -1,0 +1,151 @@
+name: "CI Quality - Python"
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# ==========================================================
+# MODIFIER ICI le dossier source Python
+# Exemple:
+#   PY_DIR: src/python
+# ==========================================================
+env:
+  PY_DIR: .
+
+jobs:
+  quality-python:
+    name: "Python Quality on ${{ matrix.label }}"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Python files (Unix)
+        if: runner.os != 'Windows'
+        id: pycheck_unix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "$PY_DIR" ] && find "$PY_DIR" -type f -name "*.py" | grep -q .; then
+            echo "has_py=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_py=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect Python files (Windows)
+        if: runner.os == 'Windows'
+        id: pycheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path $env:PY_DIR) {
+            $files = Get-ChildItem $env:PY_DIR -Recurse -File -Include *.py -ErrorAction SilentlyContinue
+          } else {
+            $files = @()
+          }
+          if ($files.Count -gt 0) {
+            "has_py=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "has_py=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - uses: actions/setup-python@v5
+        if: steps.pycheck_unix.outputs.has_py == 'true' || steps.pycheck_windows.outputs.has_py == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tools
+        if: steps.pycheck_unix.outputs.has_py == 'true' || steps.pycheck_windows.outputs.has_py == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff mypy pytest
+
+      - name: Ruff format check (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff format --check "$PY_DIR"
+
+      - name: Ruff format check (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m ruff format --check $env:PY_DIR
+
+      - name: Ruff lint (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff check "$PY_DIR"
+
+      - name: Ruff lint (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m ruff check $env:PY_DIR
+
+      - name: Mypy (best effort) (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m mypy "$PY_DIR" || true
+
+      - name: Mypy (best effort) (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m mypy $env:PY_DIR
+          if ($LASTEXITCODE -ne 0) { exit 0 }
+
+      - name: Compileall (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q "$PY_DIR"
+
+      - name: Compileall (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m compileall -q $env:PY_DIR
+
+      - name: Pytest if present (Unix)
+        if: steps.pycheck_unix.outputs.has_py == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "tests" ] || find "$PY_DIR" -maxdepth 3 -type f -name "test_*.py" | grep -q .; then
+            python -m pytest -q
+          else
+            echo "No tests -> skipping"
+          fi
+
+      - name: Pytest if present (Windows)
+        if: steps.pycheck_windows.outputs.has_py == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path "tests") {
+            python -m pytest -q
+          } else {
+            $tests = Get-ChildItem $env:PY_DIR -Recurse -File -Include test_*.py -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($tests) { python -m pytest -q } else { Write-Host "No tests -> skipping" }
+          }
+
+      - name: Python skipped
+        if: steps.pycheck_unix.outputs.has_py != 'true' && steps.pycheck_windows.outputs.has_py != 'true'
+        run: echo "No Python files -> skipping"
