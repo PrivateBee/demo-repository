@@ -5,7 +5,7 @@ public class Ballon {
     private double taille;
 
     // Constructeure
-    public Ballon(String nom, double taille) {
+    public Ballone(String nom, double taille) {
         this.nom = nom;
         this.taille = taille;
     }
