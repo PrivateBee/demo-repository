@@ -1,8 +1,8 @@
 name: "CI Quality - centralisation"
 
 on:
-  pull_request:
   push:
+  pull_request:
   workflow_dispatch:
     inputs:
       target_os:
@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-centralisation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   detect-target:
     name: Detect target OS
@@ -25,7 +29,7 @@ jobs:
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     env:
-      INPUT_TARGET: ${{ github.event.inputs.target_os || '' }}
+      INPUT_TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_os || '' }}
       REF_NAME: ${{ github.head_ref || github.ref_name }}
       PR_TITLE: ${{ github.event.pull_request.title || '' }}
       PR_BODY: ${{ github.event.pull_request.body || '' }}
