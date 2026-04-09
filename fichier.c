@@ -13,6 +13,6 @@ int main(void) {
   tab[0] = 42;
   printf("tab=%d\n", tab[0]);
 
-  /* fuite mémoire: on oublie free(tab); */
+  /* fuite mémoire oui: on oublie free(tab); */
   return 0;
 }
