@@ -4,7 +4,7 @@ public class Ballon {
     private String nom;
     private double taille;
 
-    // Constructeur
+    // Constructeure
     public Ballon(String nom, double taille) {
         this.nom = nom;
         this.taille = taille;
