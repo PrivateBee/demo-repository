@@ -1,0 +1,89 @@
+name: "CI Quality - centralisation"
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+    inputs:
+      target_os:
+        description: "OS cible à exécuter"
+        required: false
+        default: "linux"
+        type: choice
+        options:
+          - linux
+          - windows
+          - macos
+
+permissions:
+  contents: read
+
+jobs:
+  detect-target:
+    name: Detect target OS
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    env:
+      INPUT_TARGET: ${{ github.event.inputs.target_os || '' }}
+      REF_NAME: ${{ github.head_ref || github.ref_name }}
+      PR_TITLE: ${{ github.event.pull_request.title || '' }}
+      PR_BODY: ${{ github.event.pull_request.body || '' }}
+      COMMIT_MSG: ${{ github.event.head_commit.message || '' }}
+    steps:
+      - name: Pick target OS
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manual="$(printf '%s' "$INPUT_TARGET" | tr '[:upper:]' '[:lower:]')"
+          ref="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]')"
+          text="$(printf '%s %s %s' "$PR_TITLE" "$PR_BODY" "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]')"
+
+          if [[ "$manual" == "windows" ]]; then
+            matrix='{"include":[{"os":"windows-2022","label":"Windows"}]}'
+          elif [[ "$manual" == "macos" ]]; then
+            matrix='{"include":[{"os":"macos-14","label":"macOS"}]}'
+          elif [[ "$manual" == "linux" ]]; then
+            matrix='{"include":[{"os":"ubuntu-24.04","label":"Ubuntu"}]}'
+          elif [[ "$ref" == windows/* ]] || [[ "$text" == *"[windows]"* ]]; then
+            matrix='{"include":[{"os":"windows-2022","label":"Windows"}]}'
+          elif [[ "$ref" == macos/* ]] || [[ "$ref" == mac/* ]] || [[ "$text" == *"[macos]"* ]] || [[ "$text" == *"[mac]"* ]]; then
+            matrix='{"include":[{"os":"macos-14","label":"macOS"}]}'
+          else
+            matrix='{"include":[{"os":"ubuntu-24.04","label":"Ubuntu"}]}'
+          fi
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Show matrix
+        run: echo "Matrix = ${{ steps.pick.outputs.matrix }}"
+
+  c:
+    name: Run C workflow
+    needs: detect-target
+    uses: ./.github/workflows/c.yml
+    with:
+      matrix: ${{ needs.detect-target.outputs.matrix }}
+
+  cpp:
+    name: Run C++ workflow
+    needs: detect-target
+    uses: ./.github/workflows/cpp.yml
+    with:
+      matrix: ${{ needs.detect-target.outputs.matrix }}
+
+  python:
+    name: Run Python workflow
+    needs: detect-target
+    uses: ./.github/workflows/python.yml
+    with:
+      matrix: ${{ needs.detect-target.outputs.matrix }}
+
+  java:
+    name: Run Java workflow
+    needs: detect-target
+    uses: ./.github/workflows/java.yml
+    with:
+      matrix: ${{ needs.detect-target.outputs.matrix }}
