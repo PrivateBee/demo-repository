@@ -14,6 +14,6 @@ int main(void) {
   tab[0] = 42;
   printf("%d\n", tab[0]);
 
-  /* fuite mémoire: on oublie aussi free(tab); */
+  /* fuite mémoire à cause de françois: on oublie aussi free(tab); */
   return 0;
 }
