@@ -1,0 +1,154 @@
+name: "CI Quality - C"
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# ==========================================================
+# MODIFIER ICI le dossier source C
+# Exemple:
+#   C_DIR: src/c
+# ==========================================================
+env:
+  C_DIR: .
+
+jobs:
+  quality-c:
+    name: "C Quality on ${{ matrix.label }}"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect C files (Unix)
+        if: runner.os != 'Windows'
+        id: ccheck_unix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "$C_DIR" ] && find "$C_DIR" -type f \( -name "*.c" -o -name "*.h" \) | grep -q .; then
+            echo "has_c=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_c=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect C files (Windows)
+        if: runner.os == 'Windows'
+        id: ccheck_windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path $env:C_DIR) {
+            $files = Get-ChildItem $env:C_DIR -Recurse -File -Include *.c,*.h -ErrorAction SilentlyContinue
+          } else {
+            $files = @()
+          }
+          if ($files.Count -gt 0) {
+            "has_c=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "has_c=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Install C tools (Linux)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang clang-format cppcheck
+
+      - name: Install C tools (macOS)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install llvm cppcheck
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install C tools (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco upgrade -y llvm cppcheck
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -Force
+          refreshenv
+
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path $llvmBin)) {
+            throw "LLVM bin not found: $llvmBin"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: clang-format check [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$C_DIR" -type f \( -name "*.c" -o -name "*.h" \) -print0 \
+            | xargs -0 -I{} clang-format -style=LLVM -i "{}"
+          git diff --exit-code
+
+      - name: clang-format check [C] (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem $env:C_DIR -Recurse -File -Include *.c,*.h -ErrorAction SilentlyContinue |
+            ForEach-Object { & clang-format -style=LLVM -i $_.FullName }
+          git diff --exit-code
+
+      - name: Static analysis (cppcheck) [C] (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cppcheck --enable=all --inconclusive \
+            --inline-suppr --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            "$C_DIR"
+
+      - name: Static analysis (cppcheck) [C] (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cppcheck --enable=all --inconclusive --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem $env:C_DIR
+
+      - name: Compile all C units (Unix)
+        if: steps.ccheck_unix.outputs.has_c == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build_c/obj
+          while IFS= read -r f; do
+            out="build_c/obj/$(echo "$f" | sed 's|^\./||; s|[/:\\]|_|g').o"
+            clang -std=c11 -Wall -Wextra -Werror -O2 -c "$f" -o "$out"
+          done < <(find "$C_DIR" -type f -name "*.c")
+
+      - name: Compile all C units (Windows)
+        if: steps.ccheck_windows.outputs.has_c == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path build_c/obj | Out-Null
+          $files = Get-ChildItem $env:C_DIR -Recurse -File -Include *.c -ErrorAction SilentlyContinue
+          foreach ($f in $files) {
+            $safe = ($f.FullName -replace '^[A-Za-z]:\\', '' -replace '[\\/]', '_')
+            & clang -std=c11 -Wall -Wextra -Werror -O2 -c $f.FullName -o "build_c/obj/$safe.obj"
+          }
+
+      - name: C skipped
+        if: steps.ccheck_unix.outputs.has_c != 'true' && steps.ccheck_windows.outputs.has_c != 'true'
+        run: echo "No C files -> skipping"
