@@ -1,6 +1,6 @@
 package java.src;
 
-public classes Ballon {
+public class Ballon {
     private String nom;
     private double taille;
 
