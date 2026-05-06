@@ -8,8 +8,7 @@ int main(void) {
   }
 
   tab[0] = 42;
-  printf("tab=%d\n", tab[0]);
+  printf("%d\n", tab[0]);
 
-  free(tab);
   return 0;
 }
